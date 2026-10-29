@@ -42,10 +42,14 @@ ev servir --reglas D:\dev\eventos\reglas.toml
 | `ev publicar nota "texto"` | Publica un evento a mano. |
 | `ev pausa` / `ev reanudar` / `ev estado` | Detienen o reanudan los agentes y muestran el estado del bus. |
 
-## Engancharlo a Claude Code (no está hecho; es opcional)
+## Engancharlo a Claude Code
 
-- **Hooks:** añade `D:\dev\target\release\ev.exe hook` como comando en los eventos que interesen (por ejemplo, `PostToolUse` y `Stop`). No escribe nada en su salida y siempre termina con 0, así que no frena a Claude Code.
-- **MCP para que cualquier sesión publique y lea:** `claude mcp add eventos -s user -- D:\dev\target\release\ev.exe mcp`.
+- **Hooks (hecho el 2026-10-29):**
+  - En los ajustes de usuario, `D:\Programas\BusEventos\ev.exe hook` va como hook asíncrono (`"async": true`) en `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop` y `SessionEnd`, así que nunca hace esperar a Claude Code.
+  - Publica `claude.<evento>` con la sesión como correlación.
+  - Guarda solo lo necesario para saber qué sesión hace qué: sesión, carpeta, modo de permisos, motivo, aviso y herramienta. No copia lo que ella escribe, lo que entra y sale de las herramientas, la última respuesta ni la transcripción; de eso queda solo el nombre en `omitidos`.
+  - Comprobado con una sesión real: llegan los cuatro eventos de una sesión `-p` (`Notification` no salta en ese modo).
+- **MCP para que cualquier sesión publique y lea (no está hecho; es opcional):** `claude mcp add eventos -s user -- D:\dev\target\release\ev.exe mcp`.
 
 ## La Fábrica (desde 2026-10-29)
 
@@ -137,9 +141,9 @@ Cada una cubre algo que la biblioteca estándar no trae:
 cargo test --jobs 2
 ```
 
-Son 30:
+Son 32:
 
-- 22 contra el servicio de verdad, en un puerto libre y con su propia carpeta. Once de ellas salen de las dos revisiones independientes, una por cada objeción, y otra de la comprobación de herramientas del 2026-10-29.
+- 24 contra el servicio de verdad, en un puerto libre y con su propia carpeta. Once de ellas salen de las dos revisiones independientes, una por cada objeción. Otras tres son del 2026-10-29: la comprobación de herramientas y las dos de qué guarda el hook (lo que no guarda y lo que sí).
 - 8 de piezas sueltas.
 
 El arnés de Claude se prueba con un `claude` falso (un `.cmd`) que guarda sus argumentos y su entrada.

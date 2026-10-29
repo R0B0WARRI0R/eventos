@@ -257,6 +257,69 @@ fn el_hook_publica_y_no_escribe_nada_en_su_salida() {
     assert_eq!(e["cuerpo"]["tool_name"], "Bash");
 }
 
+/// Pasa una carga por `ev hook` y devuelve el cuerpo que guardó el bus para esa correlación (o tipo, si no hay sesión).
+fn por_el_hook(d: &Demonio, carga: &[u8], filtro: (&str, &str)) -> Value {
+    let mut hook = d.ev().arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("ev hook");
+    hook.stdin.take().expect("stdin").write_all(carga).expect("escribir");
+    let salida = hook.wait_with_output().expect("fin");
+    assert_eq!(salida.status.code(), Some(0));
+    assert!(salida.stdout.is_empty(), "Claude Code interpreta la salida de un hook");
+    d.ver_al_menos(&[filtro], 1)[0]["cuerpo"].clone()
+}
+
+/// Los nombres de `omitidos`, ordenados: el orden en que llegan no forma parte del contrato.
+fn omitidos(cuerpo: &Value) -> Vec<String> {
+    let mut v: Vec<String> =
+        cuerpo["omitidos"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn el_hook_no_guarda_texto_herramientas_ni_campos_nuevos() {
+    // El hook va en todas las sesiones: lo que ella escribe, lo que entra y sale de las herramientas (un fichero leído,
+    // por ejemplo), la última respuesta, la transcripción y cualquier campo que Claude Code añada mañana no se copian
+    // al bus, que es otra copia en disco y la leen agentes. De ellos queda solo el nombre.
+    let d = Demonio::arrancar("hook-minimo", None);
+    let c = por_el_hook(&d, br#"{"hook_event_name":"UserPromptSubmit","session_id":"s-1","cwd":"D:\\proyecto","transcript_path":"C:\\t.jsonl","prompt":"privado-1","campo_futuro":"privado-2","otro_futuro":{"a":"privado-3"}}"#, ("correlacion", "s-1"));
+    assert!(!c.to_string().contains("privado") && !c.to_string().contains("t.jsonl"), "{c}");
+    assert_eq!(c["cwd"], "D:\\proyecto");
+    assert_eq!(omitidos(&c), ["campo_futuro", "otro_futuro", "prompt", "transcript_path"]);
+
+    let c = por_el_hook(&d, br#"{"hook_event_name":"PostToolUse","session_id":"s-2","tool_name":"Read","tool_input":{"file_path":"privado-4.md"},"tool_response":{"content":"privado-5"}}"#, ("correlacion", "s-2"));
+    assert!(!c.to_string().contains("privado"), "{c}");
+    assert_eq!(c["tool_name"], "Read");
+    assert_eq!(omitidos(&c), ["tool_input", "tool_response"]);
+
+    let c = por_el_hook(&d, br#"{"hook_event_name":"Stop","session_id":"s-3","stop_hook_active":false,"last_assistant_message":"privado-6"}"#, ("correlacion", "s-3"));
+    assert!(!c.to_string().contains("privado"), "{c}");
+    assert_eq!(c["stop_hook_active"], false);
+    assert_eq!(omitidos(&c), ["last_assistant_message"]);
+
+    // Un campo permitido que llega con otro tipo (un objeto en vez de texto) tampoco pasa: solo valores simples.
+    let c = por_el_hook(&d, br#"{"hook_event_name":"Notification","session_id":"s-4","message":{"anidado":"privado-7"}}"#, ("correlacion", "s-4"));
+    assert!(!c.to_string().contains("privado"), "{c}");
+    assert_eq!(omitidos(&c), ["message"]);
+
+    // Lo que no es un objeto JSON no deja nada de su contenido.
+    let c = por_el_hook(&d, br#""texto privado-8""#, ("tipo", "claude.hook"));
+    assert_eq!(c, json!({ "omitidos": ["(la entrada no es un objeto JSON)"] }));
+}
+
+#[test]
+fn el_hook_guarda_los_campos_de_estado() {
+    let d = Demonio::arrancar("hook-estado", None);
+    let c = por_el_hook(&d, br#"{"hook_event_name":"SessionStart","session_id":"e-1","cwd":"D:\\p","permission_mode":"auto","source":"startup"}"#, ("correlacion", "e-1"));
+    assert_eq!(c, json!({ "hook_event_name": "SessionStart", "session_id": "e-1", "cwd": "D:\\p", "permission_mode": "auto", "source": "startup" }));
+    let c = por_el_hook(&d, br#"{"hook_event_name":"Notification","session_id":"e-2","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#, ("correlacion", "e-2"));
+    assert_eq!((c["notification_type"].as_str(), c["message"].as_str()), (Some("permission_prompt"), Some("Claude needs your permission to use Bash")));
+    let c = por_el_hook(&d, br#"{"hook_event_name":"SessionEnd","session_id":"e-3","reason":"clear"}"#, ("correlacion", "e-3"));
+    assert_eq!(c["reason"], "clear");
+    let c = por_el_hook(&d, br#"{"hook_event_name":"SubagentStop","session_id":"e-4","agent_type":"Explore","stop_hook_active":true}"#, ("correlacion", "e-4"));
+    assert_eq!((c["agent_type"].as_str(), c["stop_hook_active"].as_bool()), (Some("Explore"), Some(true)));
+    assert!(c.get("omitidos").is_none(), "sin nada omitido no aparece la clave: {c}");
+}
+
 #[test]
 fn sin_servicio_los_eventos_esperan_en_la_cola_y_se_importan_al_arrancar() {
     let dir = carpeta_temporal("cola");
