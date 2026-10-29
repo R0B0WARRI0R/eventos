@@ -56,6 +56,18 @@ svg { width: 100%; height: 100%; display: block; }
 .nodo.pulso rect, .nodo.pulso circle { stroke: var(--acento); stroke-width: 3; }
 .nodo.elegido rect, .nodo.elegido circle { stroke: var(--acento); stroke-dasharray: 5 3; }
 .lateral { display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1.15fr); gap: 12px; min-height: 0; }
+.izquierda { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 12px; min-height: 0; }
+#tareas { overflow-y: auto; max-height: 34vh; }
+#tareas .vacio { color: var(--tenue); padding: 10px 12px; margin: 0; }
+.tarea { display: grid; grid-template-columns: 160px minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; width: 100%; text-align: left; padding: 7px 12px; border: 0; border-bottom: 1px solid var(--borde); border-radius: 0; background: transparent; font-size: 13.5px; }
+.tarea:hover { background: var(--panel2); }
+.tarea:focus-visible { outline: 2px solid var(--acento); outline-offset: -2px; }
+.insignia { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
+.insignia .punto { flex: none; }
+.tarea .titulo { min-width: 0; overflow-wrap: anywhere; }
+.tarea .titulo small { display: block; color: var(--tenue); font-size: 12.5px; }
+.tarea .cuando { color: var(--tenue); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.nota-tarea { grid-column: 2 / 4; margin-top: 2px; padding: 6px 8px; border-left: 3px solid var(--c-publicado); background: var(--panel2); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
 #lista { overflow-y: auto; flex: 1; }
 .fila { display: grid; grid-template-columns: 10px 86px minmax(0, 1fr) auto; gap: 8px; align-items: center; width: 100%; text-align: left; padding: 5px 12px; border: 0; border-bottom: 1px solid var(--borde); border-radius: 0; background: transparent; font-size: 13.5px; }
 .fila:hover { background: var(--panel2); }
@@ -86,6 +98,10 @@ a.enlace { color: var(--acento); cursor: pointer; text-decoration: underline; }
   main { grid-template-columns: 1fr; height: auto; }
   #escenario { height: 420px; flex: none; }
   .lateral { grid-template-rows: 340px auto; }
+  .izquierda { grid-template-rows: auto auto; }
+  #tareas { max-height: 50vh; }
+  .tarea { grid-template-columns: 1fr; }
+  .nota-tarea { grid-column: 1; }
 }
 </style>
 </head>
@@ -115,11 +131,17 @@ a.enlace { color: var(--acento); cursor: pointer; text-decoration: underline; }
 </header>
 <div id="aviso" role="alert"></div>
 <main>
+  <div class="izquierda">
+  <section class="panel" aria-label="Tareas">
+    <h2><span>Tareas: una línea por cada una</span><span id="tareas-resumen"></span></h2>
+    <div id="tareas"><p class="vacio">Cargando tareas…</p></div>
+  </section>
   <section class="panel" aria-label="Topología">
     <h2><span>Topología: fuentes → bus → reglas → agentes</span><span id="filtro-txt"></span></h2>
     <div id="escenario"><svg id="svg" viewBox="0 0 1000 600" role="img" aria-label="Fuentes, bus, reglas y agentes; los sobres muestran cada evento viajando"></svg></div>
     <div class="leyenda" id="leyenda"></div>
   </section>
+  </div>
   <div class="lateral">
     <section class="panel" aria-label="Lista de eventos">
       <h2><span id="lista-titulo">Eventos (los últimos arriba)</span><button id="b-limpiar-filtro" hidden>Quitar filtro</button></h2>
@@ -491,6 +513,74 @@ async function refrescarEstado() {
   }
 }
 
+// ---------- tareas ----------
+// Una línea por tarea con su estado escrito, no solo de color. El estado lo calcula el bus en /tareas.
+const ESTADOS = {
+  necesita_entrada: ["necesita entrada", "var(--c-regla)"],
+  fallido: ["fallido", "var(--c-omitida)"],
+  trabajando: ["trabajando", "var(--c-salida)"],
+  listo_para_revisar: ["listo para revisar", "var(--c-agente)"],
+  parado: ["parado", "var(--c-otro)"],
+};
+const PIDEN_ATENCION = new Set(["necesita_entrada", "fallido"]);
+let estadosPrevios = null;
+let tareasPedidas = null;
+function haceCuanto(t) {
+  const s = Math.max(0, Math.round((Date.now() - new Date(t)) / 1000));
+  if (isNaN(s)) return "";
+  if (s < 60) return "ahora";
+  if (s < 3600) return `hace ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `hace ${Math.floor(s / 3600)} h`;
+  return local(t, true);
+}
+function lineaTarea(t) {
+  const [texto, color] = ESTADOS[t.estado] || [t.estado, "var(--c-otro)"];
+  const etiqueta = `${t.titulo}: ${texto}. ${t.detalle}${t.nota ? ". Para retomarla: " + t.nota : ""}`;
+  const b = h("button", { class: "tarea", type: "button", "aria-label": etiqueta, "data-clave": t.clave,
+      onclick: async () => { const e = st.porId.get(t.evento) || await buscarId(t.evento); if (e) mostrar(e); } },
+    h("span", { class: "insignia", style: `color:${color}` }, h("span", { class: "punto", style: `background:${color}` }), texto),
+    h("span", { class: "titulo" }, t.titulo, h("small", {}, t.detalle)),
+    h("span", { class: "cuando", title: local(t.desde, true) }, haceCuanto(t.desde)));
+  if (t.nota) b.append(h("span", { class: "nota-tarea" }, "Para retomarla: " + t.nota));
+  return b;
+}
+async function refrescarTareas() {
+  const caja = $("tareas");
+  let tareas;
+  try {
+    tareas = await api("/tareas");
+  } catch (err) {
+    // Si ya hay líneas, se quedan; si no, que no se quede en «Cargando».
+    if (!caja.querySelector(".tarea")) caja.replaceChildren(h("p", { class: "vacio" }, "No pude leer las tareas: " + err.message));
+    return;
+  }
+  // El foco se queda en la misma tarea al rehacer el panel (teclado y voz no pierden el sitio).
+  const enfocada = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.clave : null;
+  caja.textContent = "";
+  if (!tareas.length) caja.append(h("p", { class: "vacio" }, "Sin tareas en las últimas 24 horas."));
+  for (const t of tareas) caja.append(lineaTarea(t));
+  if (enfocada) {
+    const misma = [...caja.querySelectorAll(".tarea")].find(b => b.dataset.clave === enfocada);
+    if (misma) misma.focus();
+  }
+  const atencion = tareas.filter(t => PIDEN_ATENCION.has(t.estado)).length;
+  $("tareas-resumen").textContent = tareas.length ? `${tareas.length} · ${atencion} piden atención` : "";
+  // Para el lector de pantalla: las tareas que pasan a necesitar entrada o a fallar, todas en un solo aviso y en el
+  // orden del panel (lo más urgente primero), para que ninguna pise a otra.
+  if (estadosPrevios) {
+    const avisos = tareas
+      .filter(t => PIDEN_ATENCION.has(t.estado) && estadosPrevios.get(t.clave) !== t.estado)
+      .map(t => `${t.titulo}: ${ESTADOS[t.estado][0]}`);
+    if (avisos.length) $("anuncio").textContent = avisos.join(". ");
+  }
+  estadosPrevios = new Map(tareas.map(t => [t.clave, t.estado]));
+}
+// Como mucho una vez por segundo, aunque lleguen muchos eventos seguidos.
+function pedirTareas() {
+  if (tareasPedidas) return;
+  tareasPedidas = setTimeout(() => { tareasPedidas = null; refrescarTareas(); }, 1000);
+}
+
 // ---------- modos ----------
 function registrar(e) {
   if (st.porId.has(e.id)) return false;
@@ -532,6 +622,7 @@ async function modoVivo() {
       let redibujar = false;
       for (const e of lote) { registrar(e); redibujar = nodosDeEvento(e) || redibujar; }
       if (redibujar) { dibujar(); }
+      if (lote.length) pedirTareas();
       for (const e of lote) {
         st.cursor = Math.max(st.cursor, e.seq);
         st.eventos.push(e);
@@ -638,6 +729,9 @@ st.nodos.set("bus", { tipo: "bus", clave: "bus", etiqueta: "bus", n: 0, x: 0, y:
 (async () => {
   while (!(await refrescarEstado())) await dormir(3000);
   setInterval(refrescarEstado, 3000);
+  refrescarTareas();
+  // Por si algo se escapa y para que «hace N min» siga al día.
+  setInterval(refrescarTareas, 15000);
   cambiarModo("vivo");
 })();
 </script>

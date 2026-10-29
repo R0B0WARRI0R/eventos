@@ -12,6 +12,7 @@ pub mod mcp;
 pub mod reglas;
 pub mod run;
 pub mod servidor;
+pub mod tareas;
 pub mod texto;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;

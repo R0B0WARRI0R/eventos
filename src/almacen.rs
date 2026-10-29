@@ -126,6 +126,22 @@ impl Almacen {
         filas.collect()
     }
 
+    /// Los últimos `limite` eventos de estos tipos llegados desde `desde`, en orden de llegada. Para el panel de
+    /// tareas: así no arrastra las líneas de salida de los programas, que pueden ser miles.
+    pub fn de_tipos(&self, tipos: &[&str], desde: &str, limite: usize) -> rusqlite::Result<Vec<Evento>> {
+        let marcas = vec!["?"; tipos.len()].join(", ");
+        let sql = format!(
+            "SELECT * FROM (SELECT {COLUMNAS} FROM eventos WHERE t_visto >= ? AND tipo IN ({marcas}) \
+             ORDER BY seq DESC LIMIT ?) ORDER BY seq ASC"
+        );
+        let mut args: Vec<Box<dyn ToSql>> = vec![Box::new(desde.to_string())];
+        args.extend(tipos.iter().map(|t| Box::new(t.to_string()) as Box<dyn ToSql>));
+        args.push(Box::new(limite as i64));
+        let mut stmt = self.con.prepare(&sql)?;
+        let filas = stmt.query_map(params_from_iter(args.iter()), fila_a_evento)?;
+        filas.collect()
+    }
+
     /// El árbol causal entero del evento: desde su antepasado más lejano que siga en el bus, todos sus descendientes.
     pub fn cadena(&self, id: &str) -> rusqlite::Result<Vec<Evento>> {
         let sql = format!(

@@ -2,6 +2,7 @@ use crate::almacen::{Almacen, Filtro};
 use crate::arneses::{self, Bus};
 use crate::evento::{ahora, Evento};
 use crate::reglas::{self, Fichero, Motor, Regla, Salida, Veredicto};
+use crate::tareas;
 use crate::texto::redactar_evento;
 use crate::{Error, Resultado};
 use serde_json::{json, Value};
@@ -11,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tiny_http::{Header, Method, Request, Response, Server};
 use ulid::Ulid;
 
@@ -357,6 +358,13 @@ fn atender(n: &Arc<Nucleo>, mut req: Request) {
             Ok(json!({ "pausado": false }))
         }
         (Method::Get, "/estado") => estado(n),
+        (Method::Get, "/tareas") => {
+            // Una línea por tarea con lo llegado en las últimas `horas` (24 por defecto, una semana como mucho).
+            let horas = tareas::horas(q.get("horas").map(String::as_str));
+            let desde = tareas::desde(horas, SystemTime::now());
+            let eventos = n.almacen.lock().expect("almacén").de_tipos(tareas::TIPOS, &desde, 5000);
+            eventos.map(|v| json!(tareas::derivar(&v))).map_err(Into::into)
+        }
         _ => Err(format!("ruta desconocida: {metodo} {ruta}").into()),
     };
     let (codigo, cuerpo) = match resultado {

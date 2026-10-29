@@ -10,6 +10,14 @@ Se abre con el acceso **Bus de eventos** del escritorio (`D:\Programas\BusEvento
 
 - **Al abrir:** si el bus no está en marcha, lo arranca sin consola, con `D:\dev\eventos\reglas.toml`.
 - **Al cerrar:** lo para, pero solo si lo arrancó ella. El título de la ventana dice cuál de los dos casos es.
+- **Tareas (desde 2026-10-29):** arriba a la izquierda, una línea por tarea con su estado escrito.
+  - Los estados son trabajando, necesita entrada, listo para revisar, fallido y parado. Primero sale lo que pide atención.
+  - Las tareas salen de La Fábrica, de las sesiones de Claude Code, de `ev run` y de los agentes. La nota del agente de diagnóstico va debajo de la tarea fallida.
+  - Pulsar una línea abre su último evento. Los cambios a «necesita entrada» o «fallido» se anuncian al lector de pantalla, todos juntos en un solo aviso y lo más urgente primero. Al refrescarse, el foco se queda en la misma línea.
+  - Dentro de un mismo estado, primero lo que llegó después.
+  - Al reintentar una tarea, su nota anterior desaparece, y una nota que llegue después del reintento ya no se pega.
+  - Los títulos de las órdenes van redactados.
+  - Lo mismo en JSON: `http://127.0.0.1:8870/tareas?horas=24`, con 24 horas por defecto y una semana como mucho.
 - **Topología:** fuentes → bus → reglas → agentes, con sobres de colores que viajan por las aristas.
 - **Lista de eventos y detalle por capas:** sobre, causalidad, contenido y procedencia.
 - **Modos:** Tiempo real, y Simulación, que repite lo guardado paso a paso o seguido, a ×0,5–×4. También se puede repetir solo la cadena causal de un evento.
@@ -141,10 +149,10 @@ Cada una cubre algo que la biblioteca estándar no trae:
 cargo test --jobs 2
 ```
 
-Son 32:
+Son 45:
 
-- 24 contra el servicio de verdad, en un puerto libre y con su propia carpeta. Once de ellas salen de las dos revisiones independientes, una por cada objeción. Otras tres son del 2026-10-29: la comprobación de herramientas y las dos de qué guarda el hook (lo que no guarda y lo que sí).
-- 8 de piezas sueltas.
+- 25 contra el servicio de verdad, en un puerto libre y con su propia carpeta. Once de ellas salen de las dos revisiones independientes, una por cada objeción. Otras cuatro son del 2026-10-29: la comprobación de herramientas, las dos de qué guarda el hook (lo que no guarda y lo que sí) y la de `/tareas`.
+- 20 de piezas sueltas; doce de ellas, del estado de las tareas.
 
 El arnés de Claude se prueba con un `claude` falso (un `.cmd`) que guarda sus argumentos y su entrada.
 

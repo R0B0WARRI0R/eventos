@@ -307,6 +307,26 @@ fn el_hook_no_guarda_texto_herramientas_ni_campos_nuevos() {
 }
 
 #[test]
+fn tareas_da_una_linea_por_tarea_con_su_estado() {
+    let d = Demonio::arrancar("tareas", None);
+    d.publicar(json!([
+        { "fuente": "fabrica:p", "tipo": "fabrica.tarea.inicio", "correlacion": "fabrica:p:t1", "cuerpo": "Arreglar la suma",
+          "atributos": { "agente": "codex", "proyecto": "p", "tarea": "t1" } },
+        { "fuente": "hook:claude/s1", "tipo": "claude.Notification", "correlacion": "s1", "cuerpo": { "message": "te necesita" } },
+        { "fuente": "proc:x", "tipo": "linea.stdout", "correlacion": "s1", "cuerpo": "ruido" }
+    ]));
+    let tareas: Value = ureq::get(&d.url("/tareas")).call().expect("tareas").into_json().expect("JSON");
+    let lista = tareas.as_array().expect("lista");
+    assert_eq!(lista.len(), 2, "{tareas}");
+    assert_eq!((lista[0]["clave"].as_str(), lista[0]["estado"].as_str()), (Some("s1"), Some("necesita_entrada")), "{tareas}");
+    assert_eq!((lista[1]["clave"].as_str(), lista[1]["estado"].as_str()), (Some("fabrica:p:t1"), Some("trabajando")), "{tareas}");
+    // Que la consulta no caiga en el mismo milisegundo que lo publicado.
+    thread::sleep(Duration::from_millis(5));
+    let viejas: Value = ureq::get(&d.url("/tareas?horas=0")).call().expect("tareas").into_json().expect("JSON");
+    assert_eq!(viejas, json!([]), "con 0 horas no entra nada de lo anterior");
+}
+
+#[test]
 fn el_hook_guarda_los_campos_de_estado() {
     let d = Demonio::arrancar("hook-estado", None);
     let c = por_el_hook(&d, br#"{"hook_event_name":"SessionStart","session_id":"e-1","cwd":"D:\\p","permission_mode":"auto","source":"startup"}"#, ("correlacion", "e-1"));
