@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visor del bus</title>
+<style>
+:root {
+  --fondo: #0d1117; --panel: #161b22; --panel2: #1c2230; --borde: #30363d; --texto: #e6edf3; --tenue: #9aa4b0;
+  --acento: #ff8a3d; --linea: #3a4250;
+  --c-salida: #4cc9f0; --c-hook: #b388ff; --c-regla: #ffc145; --c-espera: #ffc145; --c-omitida: #ff6b6b;
+  --c-agente: #5be37d; --c-publicado: #ff8fc8; --c-otro: #c9d1d9;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --fondo: #f6f8fa; --panel: #ffffff; --panel2: #f0f3f6; --borde: #d0d7de; --texto: #1f2328; --tenue: #59636e;
+    --acento: #c2410c; --linea: #c4cbd3;
+    --c-salida: #0077a8; --c-hook: #7c4dff; --c-regla: #a16207; --c-espera: #a16207; --c-omitida: #cf222e;
+    --c-agente: #1a7f37; --c-publicado: #bf3989; --c-otro: #57606a;
+    color-scheme: light;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--fondo); color: var(--texto); font: 15px/1.45 system-ui, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--borde); background: var(--panel); }
+h1 { font-size: 17px; margin: 0 8px 0 0; letter-spacing: .02em; }
+h1 span { color: var(--acento); }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip { padding: 2px 10px; border: 1px solid var(--borde); border-radius: 999px; font-size: 13px; color: var(--tenue); }
+.chip b { color: var(--texto); font-weight: 600; }
+.chip.alerta { border-color: var(--c-omitida); color: var(--c-omitida); }
+.controles { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-left: auto; }
+button, select { font: inherit; font-size: 14px; color: var(--texto); background: var(--panel2); border: 1px solid var(--borde); border-radius: 8px; padding: 5px 11px; cursor: pointer; }
+button:hover { border-color: var(--acento); }
+button:focus-visible, select:focus-visible, .fila:focus-visible, .nodo:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+button[aria-pressed="true"] { background: var(--acento); color: #111; border-color: var(--acento); }
+button:disabled { opacity: .45; cursor: default; }
+.segmentado { display: inline-flex; }
+.segmentado button { border-radius: 0; }
+.segmentado button:first-child { border-radius: 8px 0 0 8px; }
+.segmentado button:last-child { border-radius: 0 8px 8px 0; margin-left: -1px; }
+#aviso { display: none; padding: 8px 16px; background: color-mix(in srgb, var(--c-omitida) 18%, var(--panel)); border-bottom: 1px solid var(--c-omitida); }
+main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); gap: 12px; padding: 12px 16px; height: calc(100vh - 62px); }
+.panel { background: var(--panel); border: 1px solid var(--borde); border-radius: 10px; min-height: 0; display: flex; flex-direction: column; }
+.panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--tenue); margin: 0; padding: 9px 12px; border-bottom: 1px solid var(--borde); display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+#escenario { flex: 1; min-height: 0; }
+svg { width: 100%; height: 100%; display: block; }
+.columna-titulo { fill: var(--tenue); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; }
+.arista { stroke: var(--linea); stroke-width: 1.5; fill: none; }
+.arista.activa { stroke: var(--acento); stroke-width: 2.5; }
+.nodo rect, .nodo circle { fill: var(--panel2); stroke: var(--borde); stroke-width: 1.5; transition: stroke .3s, fill .3s; }
+.nodo text { fill: var(--texto); font-size: 14px; pointer-events: none; }
+.nodo .cuenta { fill: var(--tenue); font-size: 12px; }
+.nodo { cursor: pointer; }
+.nodo.pulso rect, .nodo.pulso circle { stroke: var(--acento); stroke-width: 3; }
+.nodo.elegido rect, .nodo.elegido circle { stroke: var(--acento); stroke-dasharray: 5 3; }
+.lateral { display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1.15fr); gap: 12px; min-height: 0; }
+#lista { overflow-y: auto; flex: 1; }
+.fila { display: grid; grid-template-columns: 10px 86px minmax(0, 1fr) auto; gap: 8px; align-items: center; width: 100%; text-align: left; padding: 5px 12px; border: 0; border-bottom: 1px solid var(--borde); border-radius: 0; background: transparent; font-size: 13.5px; }
+.fila:hover { background: var(--panel2); }
+.fila.actual { background: color-mix(in srgb, var(--acento) 16%, transparent); }
+.punto { width: 10px; height: 10px; border-radius: 50%; }
+.hora { color: var(--tenue); font-variant-numeric: tabular-nums; }
+.tipo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tipo small { color: var(--tenue); margin-left: 6px; }
+.prof { color: var(--tenue); font-size: 12px; }
+#detalle { overflow-y: auto; flex: 1; padding: 10px 12px; }
+#detalle .vacio { color: var(--tenue); }
+details { border: 1px solid var(--borde); border-radius: 8px; margin-bottom: 8px; background: var(--panel2); }
+summary { padding: 6px 10px; cursor: pointer; font-weight: 600; font-size: 13.5px; }
+summary .capa { color: var(--acento); margin-right: 6px; }
+dl { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 4px 10px; margin: 0; padding: 4px 10px 10px; font-size: 13.5px; }
+dt { color: var(--tenue); }
+dd { margin: 0; overflow-wrap: anywhere; }
+pre { margin: 0 10px 10px; padding: 8px; background: var(--fondo); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; max-height: 260px; overflow-y: auto; }
+a.enlace { color: var(--acento); cursor: pointer; text-decoration: underline; }
+.acciones { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 10px; }
+.cadena { list-style: none; margin: 0; padding: 0 10px 10px; font-size: 13px; }
+.cadena li { padding: 2px 0; }
+.leyenda { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 12px; border-top: 1px solid var(--borde); font-size: 12.5px; color: var(--tenue); }
+.leyenda span { display: inline-flex; align-items: center; gap: 6px; }
+.nota { color: var(--tenue); font-size: 12.5px; padding: 0 10px 10px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; height: auto; }
+  #escenario { height: 420px; flex: none; }
+  .lateral { grid-template-rows: 340px auto; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1><span>◉</span> Bus de eventos</h1>
+  <div class="chips" aria-label="Estado del bus">
+    <span class="chip">eventos <b id="c-eventos">–</b></span>
+    <span class="chip">agentes <b id="c-agentes">–</b></span>
+    <span class="chip">en cola <b id="c-cola">–</b></span>
+    <span class="chip" id="c-pausa">reglas <b>activas</b></span>
+  </div>
+  <div class="controles">
+    <div class="segmentado" role="group" aria-label="Modo">
+      <button id="m-vivo" aria-pressed="true">Tiempo real</button>
+      <button id="m-sim" aria-pressed="false">Simulación</button>
+    </div>
+    <button id="b-play" disabled>▶ Reproducir</button>
+    <button id="b-paso" disabled>Siguiente paso</button>
+    <button id="b-inicio" disabled>Desde el principio</button>
+    <label class="sr" for="b-vel">Velocidad</label>
+    <select id="b-vel" title="Velocidad de los sobres">
+      <option value="0.5">×0,5</option><option value="1" selected>×1</option><option value="2">×2</option><option value="4">×4</option>
+    </select>
+    <button id="b-reglas" title="Pausar o reanudar los agentes (POST /pausa y /reanudar)">Pausar reglas</button>
+  </div>
+</header>
+<div id="aviso" role="alert"></div>
+<main>
+  <section class="panel" aria-label="Topología">
+    <h2><span>Topología: fuentes → bus → reglas → agentes</span><span id="filtro-txt"></span></h2>
+    <div id="escenario"><svg id="svg" viewBox="0 0 1000 600" role="img" aria-label="Fuentes, bus, reglas y agentes; los sobres muestran cada evento viajando"></svg></div>
+    <div class="leyenda" id="leyenda"></div>
+  </section>
+  <div class="lateral">
+    <section class="panel" aria-label="Lista de eventos">
+      <h2><span id="lista-titulo">Eventos (los últimos arriba)</span><button id="b-limpiar-filtro" hidden>Quitar filtro</button></h2>
+      <div id="lista"></div>
+    </section>
+    <section class="panel" aria-label="Detalle del evento">
+      <h2><span>Detalle por capas</span></h2>
+      <div id="detalle"><p class="vacio">Pulsa un evento de la lista, o un nodo de la topología, para ver su detalle.</p></div>
+    </section>
+  </div>
+</main>
+<div id="anuncio" class="sr" aria-live="polite"></div>
+<script>
+"use strict";
+const NS = "http://www.w3.org/2000/svg";
+const W = 1000, H = 600;
+const COLX = { fuente: 120, bus: 430, regla: 690, agente: 890 };
+const CATEGORIAS = [
+  ["salida", "salida de programas"], ["hook", "hooks de Claude Code"], ["regla", "disparo de regla"],
+  ["espera", "en espera de hueco"], ["omitida", "regla omitida"], ["agente", "lo que hace el agente"],
+  ["publicado", "publicado por un agente"], ["otro", "otros"],
+];
+const reducido = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const $ = id => document.getElementById(id);
+
+const st = {
+  modo: "vivo", cursor: 0, eventos: [], porId: new Map(), nodos: new Map(), reglas: [], filtro: null,
+  velocidad: 1, sim: { lista: [], i: 0, reproduciendo: false }, control: null, animando: 0, ultimoAnuncio: 0,
+};
+
+// ---------- utilidades ----------
+async function api(ruta, opciones = {}) {
+  const r = await fetch(ruta, opciones);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+function el(nombre, attrs = {}, padre) {
+  const n = document.createElementNS(NS, nombre);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (padre) padre.appendChild(n);
+  return n;
+}
+function h(etiqueta, attrs = {}, ...hijos) {
+  const n = document.createElement(etiqueta);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith("on")) n.addEventListener(k.slice(2), v); else if (v !== undefined && v !== null) n.setAttribute(k, v);
+  }
+  for (const c of hijos) if (c !== null && c !== undefined) n.append(c instanceof Node ? c : String(c));
+  return n;
+}
+const corto = (t, n) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
+// El bus guarda UTC; aquí se ve la hora local, con milisegundos.
+function local(t, conFecha) {
+  const d = new Date(t);
+  if (!t || isNaN(d)) return "";
+  const ms = "." + String(d.getMilliseconds()).padStart(3, "0");
+  return (conFecha ? d.toLocaleDateString("es-ES") + " " : "") + d.toLocaleTimeString("es-ES", { hour12: false }) + ms;
+}
+const hora = e => local(e.t_visto, false);
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+function cuerpoTexto(c) { return c === null || c === undefined ? "" : typeof c === "string" ? c : JSON.stringify(c, null, 2); }
+
+function categoria(e) {
+  if (e.tipo === "regla.omitida") return "omitida";
+  if (e.tipo === "regla.en_espera") return "espera";
+  if (e.tipo.startsWith("regla.")) return "regla";
+  if (e.tipo.startsWith("agente.")) return "agente";
+  if (e.fuente.startsWith("agente:")) return "publicado";
+  if (e.fuente.startsWith("hook:")) return "hook";
+  if (e.tipo.startsWith("linea.") || e.tipo.startsWith("proceso.")) return "salida";
+  return "otro";
+}
+const color = cat => `var(--c-${cat})`;
+
+// ---------- nodos y topología ----------
+function claveFuente(f) {
+  if (f === "bus") return "bus";
+  if (f.startsWith("agente:")) return "agente:" + f.slice(7).split("/")[0];
+  if (f.startsWith("proc:")) return "proc:" + (f.slice(5).trim().split(/\s+/)[0] || "?");
+  return f.split("/")[0].slice(0, 28);
+}
+function asegurar(tipo, clave, etiqueta) {
+  if (st.nodos.has(clave)) return false;
+  st.nodos.set(clave, { tipo, clave, etiqueta, n: 0, x: 0, y: 0, g: null });
+  return true;
+}
+function nodosDeEvento(e) {
+  let nuevo = false;
+  const k = claveFuente(e.fuente);
+  if (k.startsWith("agente:")) nuevo = asegurar("agente", k, k.slice(7)) || nuevo;
+  else if (k !== "bus") nuevo = asegurar("fuente", k, k.startsWith("proc:") ? k.slice(5) + " (proceso)" : k) || nuevo;
+  if (e.tipo.startsWith("regla.") && e.atributos && e.atributos.regla) {
+    nuevo = asegurar("regla", "regla:" + e.atributos.regla, e.atributos.regla) || nuevo;
+    if (e.atributos.arnes) nuevo = asegurar("agente", "agente:" + e.atributos.arnes, e.atributos.arnes) || nuevo;
+  }
+  return nuevo;
+}
+function colocar() {
+  const porTipo = { fuente: [], regla: [], agente: [] };
+  for (const n of st.nodos.values()) if (porTipo[n.tipo]) porTipo[n.tipo].push(n);
+  for (const [tipo, lista] of Object.entries(porTipo)) {
+    lista.forEach((n, i) => { n.x = COLX[tipo]; n.y = 60 + (H - 90) * (i + 1) / (lista.length + 1); });
+  }
+  const bus = st.nodos.get("bus");
+  bus.x = COLX.bus; bus.y = H / 2 + 15;
+}
+function dibujar() {
+  colocar();
+  const svg = $("svg");
+  svg.textContent = "";
+  for (const [tipo, titulo] of [["fuente", "Fuentes"], ["bus", "Bus"], ["regla", "Reglas"], ["agente", "Agentes"]]) {
+    el("text", { x: COLX[tipo], y: 30, "text-anchor": "middle", class: "columna-titulo" }, svg).textContent = titulo;
+  }
+  const capaAristas = el("g", {}, svg);
+  st.capaSobres = el("g", {}, svg);
+  const capaNodos = el("g", {}, svg);
+  st.aristas = new Map();
+  const bus = st.nodos.get("bus");
+  const unir = (a, b, curva) => {
+    const d = curva
+      ? `M${a.x - 70},${a.y + 12} C${a.x - 160},${a.y + 140} ${b.x + 140},${b.y + 170} ${b.x + 40},${b.y + 50}`
+      : `M${a.x},${a.y} L${b.x},${b.y}`;
+    st.aristas.set(a.clave + ">" + b.clave, el("path", { d, class: "arista" }, capaAristas));
+  };
+  for (const n of st.nodos.values()) {
+    if (n.tipo === "fuente") unir(n, bus);
+    if (n.tipo === "regla") {
+      unir(bus, n);
+      const r = st.reglas.find(r => "regla:" + r.nombre === n.clave);
+      const ag = r && st.nodos.get("agente:" + r.arnes);
+      if (ag) unir(n, ag);
+    }
+    if (n.tipo === "agente") unir(n, bus, true);
+  }
+  for (const n of st.nodos.values()) {
+    const g = el("g", { class: "nodo", tabindex: "0", role: "button", "aria-label": `${n.tipo} ${n.etiqueta}` }, capaNodos);
+    if (n.tipo === "bus") {
+      el("circle", { cx: n.x, cy: n.y, r: 62 }, g);
+      el("text", { x: n.x, y: n.y - 4, "text-anchor": "middle", style: "font-weight:700;font-size:18px" }, g).textContent = "BUS";
+      n.txt = el("text", { x: n.x, y: n.y + 18, "text-anchor": "middle", class: "cuenta" }, g);
+    } else {
+      el("rect", { x: n.x - 88, y: n.y - 22, width: 176, height: 44, rx: 9 }, g);
+      el("text", { x: n.x, y: n.y - 2, "text-anchor": "middle" }, g).textContent = corto(n.etiqueta, 22);
+      n.txt = el("text", { x: n.x, y: n.y + 15, "text-anchor": "middle", class: "cuenta" }, g);
+    }
+    n.g = g;
+    pintarCuenta(n);
+    const elegir = () => elegirNodo(n);
+    g.addEventListener("click", elegir);
+    g.addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); elegir(); } });
+    if (st.filtro && st.filtro.clave === n.clave) g.classList.add("elegido");
+  }
+}
+function pintarCuenta(n) {
+  if (!n.txt) return;
+  n.txt.textContent = n.tipo === "bus" ? `SQLite · ${n.n} evento${n.n === 1 ? "" : "s"}` : `${n.n} evento${n.n === 1 ? "" : "s"}`;
+}
+function pulsar(clave) {
+  const n = st.nodos.get(clave);
+  if (!n || !n.g) return;
+  n.g.classList.add("pulso");
+  setTimeout(() => n.g && n.g.classList.remove("pulso"), 350 / st.velocidad + 150);
+}
+
+// ---------- sobres que viajan ----------
+function ruta(e) {
+  if (e.tipo.startsWith("regla.")) {
+    const r = "regla:" + (e.atributos && e.atributos.regla);
+    return e.tipo === "regla.disparo" ? ["bus", r, "agente:" + (e.atributos && e.atributos.arnes)] : ["bus", r];
+  }
+  const k = claveFuente(e.fuente);
+  return k === "bus" ? ["bus"] : [k, "bus"];
+}
+function sobre(cat) {
+  const g = el("g", {}, st.capaSobres);
+  el("rect", { x: -11, y: -8, width: 22, height: 16, rx: 2.5, fill: color(cat), stroke: "var(--fondo)", "stroke-width": 1.5 }, g);
+  el("polyline", { points: "-11,-8 0,1 11,-8", fill: "none", stroke: "var(--fondo)", "stroke-width": 1.5 }, g);
+  if (cat === "omitida") el("path", { d: "M-5,-3 L5,5 M5,-3 L-5,5", stroke: "var(--fondo)", "stroke-width": 2 }, g);
+  return g;
+}
+function contar(e) {
+  for (const clave of new Set(ruta(e))) {
+    const n = st.nodos.get(clave);
+    if (n) { n.n++; pintarCuenta(n); }
+  }
+}
+function animar(e) {
+  const pasos = ruta(e).map(c => st.nodos.get(c)).filter(Boolean);
+  contar(e);
+  if (reducido || pasos.length < 2 || !st.capaSobres || st.animando > 40) {
+    pasos.forEach(p => pulsar(p.clave));
+    return Promise.resolve();
+  }
+  st.animando++;
+  const g = sobre(categoria(e));
+  const tramo = 650 / st.velocidad;
+  return new Promise(resolver => {
+    let i = 0, t0 = performance.now();
+    const arista = () => st.aristas && st.aristas.get(pasos[i].clave + ">" + pasos[i + 1].clave);
+    let activa = arista(); if (activa) activa.classList.add("activa");
+    pulsar(pasos[0].clave);
+    const marco = ahora => {
+      const a = pasos[i], b = pasos[i + 1];
+      let t = Math.min(1, (ahora - t0) / tramo);
+      t = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      g.setAttribute("transform", `translate(${a.x + (b.x - a.x) * t},${a.y + (b.y - a.y) * t})`);
+      if (ahora - t0 >= tramo) {
+        if (activa) activa.classList.remove("activa");
+        pulsar(b.clave);
+        i++; t0 = ahora;
+        if (i >= pasos.length - 1) { g.remove(); st.animando--; resolver(); return; }
+        activa = arista(); if (activa) activa.classList.add("activa");
+      }
+      requestAnimationFrame(marco);
+    };
+    requestAnimationFrame(marco);
+  });
+}
+
+// ---------- lista y detalle ----------
+function visible(e) {
+  if (!st.filtro) return true;
+  if (st.filtro.correlacion) return e.correlacion === st.filtro.correlacion;
+  const c = st.filtro.clave;
+  if (c.startsWith("regla:")) return e.atributos && "regla:" + e.atributos.regla === c;
+  return claveFuente(e.fuente) === c;
+}
+function fila(e) {
+  const b = h("button", { class: "fila", "data-id": e.id, onclick: () => mostrar(e) },
+    h("span", { class: "punto", style: `background:${color(categoria(e))}` }),
+    h("span", { class: "hora" }, hora(e)),
+    h("span", { class: "tipo" }, e.tipo, h("small", {}, corto(e.fuente, 34))),
+    h("span", { class: "prof" }, "p" + e.profundidad));
+  b.title = corto(cuerpoTexto(e.cuerpo).replace(/\s+/g, " "), 200);
+  return b;
+}
+function anadirFila(e, arriba) {
+  if (!visible(e)) return;
+  const lista = $("lista");
+  const f = fila(e);
+  if (arriba) lista.prepend(f); else lista.append(f);
+  while (lista.children.length > 600) lista.lastChild.remove();
+  if (!arriba) f.scrollIntoView({ block: "nearest" });
+}
+function rehacerLista() {
+  const lista = $("lista");
+  lista.textContent = "";
+  const fuente = st.modo === "vivo" ? st.eventos : st.sim.lista.slice(0, st.sim.i);
+  const vis = fuente.filter(visible);
+  if (st.modo === "vivo") vis.slice(-600).reverse().forEach(e => lista.append(fila(e)));
+  else vis.slice(-600).forEach(e => lista.append(fila(e)));
+  $("filtro-txt").textContent = st.filtro ? "filtro: " + st.filtro.texto : "";
+  $("b-limpiar-filtro").hidden = !st.filtro;
+}
+function marcarActual(id) {
+  document.querySelectorAll(".fila.actual").forEach(f => f.classList.remove("actual"));
+  const f = document.querySelector(`.fila[data-id="${CSS.escape(id)}"]`);
+  if (f) f.classList.add("actual");
+}
+function capa(numero, titulo, ...contenido) {
+  return h("details", { open: "" }, h("summary", {}, h("span", { class: "capa" }, numero), titulo), ...contenido);
+}
+function dl(pares) {
+  const d = h("dl");
+  for (const [k, v] of pares) if (v !== undefined && v !== null && v !== "") d.append(h("dt", {}, k), h("dd", {}, v));
+  return d;
+}
+function enlaceEvento(id) {
+  return h("a", { class: "enlace", tabindex: "0", onclick: async () => { const e = st.porId.get(id) || await buscarId(id); if (e) mostrar(e); } }, corto(id, 30));
+}
+async function buscarId(id) {
+  try { return (await api("/cadena/" + encodeURIComponent(id))).find(e => e.id === id); } catch { return null; }
+}
+function mostrar(e) {
+  marcarActual(e.id);
+  const det = $("detalle");
+  det.textContent = "";
+  det.append(
+    h("div", { class: "acciones" },
+      h("button", { onclick: () => verCadena(e) }, "Ver su cadena causal"),
+      h("button", { onclick: () => repetirCadena(e) }, "Repetir la cadena en simulación"),
+      e.correlacion ? h("button", { onclick: () => filtrar({ correlacion: e.correlacion, texto: "misma ejecución" }) }, "Solo su ejecución") : null),
+    capa("1", "Sobre: qué es y de dónde viene", dl([
+      ["tipo", h("span", { style: `color:${color(categoria(e))};font-weight:600` }, e.tipo)],
+      ["fuente", e.fuente], ["gravedad", e.gravedad], ["id", e.id], ["seq", e.seq],
+      ["ocurrió", e.t_evento && `${local(e.t_evento, true)} (UTC ${e.t_evento})`],
+      ["llegó al bus", `${local(e.t_visto, true)} (UTC ${e.t_visto})`]])),
+    capa("2", "Causalidad: quién lo provocó", dl([
+      ["causa", e.causa ? enlaceEvento(e.causa) : "ninguna (lo originó una fuente)"],
+      ["profundidad", `${e.profundidad} (agentes encadenados hasta aquí)`],
+      ["correlación", e.correlacion]])),
+    capa("3", "Contenido", e.cuerpo !== undefined && e.cuerpo !== null ? h("pre", {}, cuerpoTexto(e.cuerpo)) : h("p", { class: "nota" }, "sin cuerpo"),
+      e.atributos ? h("pre", {}, JSON.stringify(e.atributos, null, 2)) : null),
+    capa("4", "Confianza", dl([["procedencia declarada", e.confianza || "desconocida"]]),
+      h("p", { class: "nota" }, "Lo que llega al bus es dato: cuando un agente lo recibe, va entre etiquetas <evento> y nunca como instrucción.")),
+  );
+  det.scrollTop = 0;
+}
+async function verCadena(e) {
+  try {
+    const cadena = await api("/cadena/" + encodeURIComponent(e.id));
+    const ul = h("ul", { class: "cadena" });
+    for (const x of cadena) {
+      ul.append(h("li", { style: `padding-left:${x.profundidad * 18}px` },
+        h("span", { class: "punto", style: `display:inline-block;margin-right:6px;background:${color(categoria(x))}` }),
+        h("a", { class: "enlace", onclick: () => mostrar(x) }, x.tipo), " ", h("span", { class: "hora" }, hora(x) + " · " + corto(x.fuente, 28))));
+    }
+    $("detalle").prepend(capa("⛓", `Cadena causal (${cadena.length} eventos)`, ul));
+  } catch (err) { aviso("No pude leer la cadena: " + err.message); }
+}
+function elegirNodo(n) {
+  if (n.tipo === "bus") { filtrar(null); return; }
+  filtrar({ clave: n.clave, texto: n.etiqueta });
+  if (n.tipo === "regla") {
+    const r = st.reglas.find(r => "regla:" + r.nombre === n.clave);
+    if (r) {
+      const det = $("detalle");
+      det.textContent = "";
+      det.append(capa("R", `Regla «${r.nombre}»`, dl([
+        ["cuando llega", r.tipo], ["fuente", r.fuente || "cualquiera"],
+        ["atributos =", Object.keys(r.atributos || {}).length ? JSON.stringify(r.atributos) : ""],
+        ["atributos ≠", Object.keys(r.atributos_distinto || {}).length ? JSON.stringify(r.atributos_distinto) : ""],
+        ["arnés", r.arnes + (r.modelo ? ` (${r.modelo})` : "")], ["permisos", r.permisos],
+        ["límites", `profundidad < ${r.profundidad} · ${r.por_hora}/hora · ${r.a_la_vez} a la vez · ${r.minutos} min`]]),
+        h("pre", {}, r.encargo || r.publica || "")));
+    }
+  }
+}
+function filtrar(f) {
+  st.filtro = f;
+  document.querySelectorAll(".nodo.elegido").forEach(g => g.classList.remove("elegido"));
+  if (f && f.clave) { const n = st.nodos.get(f.clave); if (n && n.g) n.g.classList.add("elegido"); }
+  rehacerLista();
+}
+
+// ---------- aviso, anuncio, estado ----------
+function aviso(texto) { const a = $("aviso"); a.textContent = texto || ""; a.style.display = texto ? "block" : "none"; }
+function anunciar(e) {
+  if (e.tipo.startsWith("linea.")) return;
+  const ahora = Date.now();
+  if (ahora - st.ultimoAnuncio < 2000) return;
+  st.ultimoAnuncio = ahora;
+  $("anuncio").textContent = `${e.tipo} de ${e.fuente}`;
+}
+async function refrescarEstado() {
+  try {
+    const s = await api("/estado");
+    $("c-eventos").textContent = s.eventos;
+    $("c-agentes").textContent = s.agentes_activos;
+    $("c-cola").textContent = s.pendientes;
+    const p = $("c-pausa");
+    p.classList.toggle("alerta", s.pausado);
+    p.innerHTML = s.pausado ? "reglas <b>en pausa</b>" : "reglas <b>activas</b>";
+    $("b-reglas").textContent = s.pausado ? "Reanudar reglas" : "Pausar reglas";
+    $("b-reglas").dataset.pausado = s.pausado ? "1" : "";
+    const nuevas = JSON.stringify(s.reglas_detalle) !== JSON.stringify(st.reglas);
+    st.reglas = s.reglas_detalle || [];
+    let cambio = nuevas;
+    for (const r of st.reglas) {
+      cambio = asegurar("regla", "regla:" + r.nombre, r.nombre) || cambio;
+      cambio = asegurar("agente", "agente:" + r.arnes, r.arnes) || cambio;
+    }
+    if (cambio) dibujar();
+    aviso("");
+    return true;
+  } catch (err) {
+    aviso("El bus no responde en " + location.host + ": ¿está en marcha `ev servir`? Reintento cada 3 s.");
+    return false;
+  }
+}
+
+// ---------- modos ----------
+function registrar(e) {
+  if (st.porId.has(e.id)) return false;
+  st.porId.set(e.id, e);
+  return true;
+}
+async function cargarHistoria() {
+  const todos = [];
+  let despues = 0;
+  for (;;) {
+    const lote = await api(`/eventos?despues=${despues}&limite=1000`);
+    todos.push(...lote);
+    if (lote.length < 1000) break;
+    despues = lote[lote.length - 1].seq;
+  }
+  return todos;
+}
+function reiniciarCuentas() { for (const n of st.nodos.values()) { n.n = 0; pintarCuenta(n); } }
+
+async function modoVivo() {
+  const control = new AbortController();
+  st.control = control;
+  reiniciarCuentas();
+  // Al entrar: lo último guardado (sin animar) para situarse.
+  const recientes = await api("/eventos?limite=300").catch(() => []);
+  st.eventos = recientes;
+  let nuevos = false;
+  recientes.forEach(e => { registrar(e); nuevos = nodosDeEvento(e) || nuevos; });
+  dibujar();
+  recientes.forEach(contar);
+  st.cursor = recientes.length ? recientes[recientes.length - 1].seq : (await api("/estado").catch(() => ({ ultimo: 0 }))).ultimo;
+  rehacerLista();
+  while (!control.signal.aborted) {
+    try {
+      const r = await fetch(`/esperar?despues=${st.cursor}&segundos=25`, { signal: control.signal });
+      if (!r.ok) throw new Error(r.status);
+      const lote = await r.json();
+      aviso("");
+      let redibujar = false;
+      for (const e of lote) { registrar(e); redibujar = nodosDeEvento(e) || redibujar; }
+      if (redibujar) { dibujar(); }
+      for (const e of lote) {
+        st.cursor = Math.max(st.cursor, e.seq);
+        st.eventos.push(e);
+        if (st.eventos.length > 3000) st.eventos.splice(0, 1000);
+        anadirFila(e, true);
+        anunciar(e);
+        animar(e);
+        await dormir((lote.length > 50 ? 15 : 90) / st.velocidad);
+      }
+    } catch (err) {
+      if (control.signal.aborted) return;
+      await refrescarEstado();
+      await dormir(3000);
+    }
+  }
+}
+
+async function modoSimulacion() {
+  reiniciarCuentas();
+  st.sim = { lista: await cargarHistoria().catch(err => { aviso("No pude leer la historia: " + err.message); return []; }), i: 0, reproduciendo: false };
+  st.sim.lista.forEach(e => { registrar(e); nodosDeEvento(e); });
+  dibujar();
+  rehacerLista();
+  botonesSim();
+  $("detalle").textContent = "";
+  $("detalle").append(h("p", { class: "vacio" },
+    `Simulación: ${st.sim.lista.length} eventos guardados. «Siguiente paso» avanza uno; «Reproducir» los pasa todos a la velocidad elegida.`));
+}
+function botonesSim() {
+  const sim = st.modo === "sim";
+  $("b-play").disabled = !sim || st.sim.i >= st.sim.lista.length;
+  $("b-paso").disabled = !sim || st.sim.reproduciendo || st.sim.i >= st.sim.lista.length;
+  $("b-inicio").disabled = !sim;
+  $("b-play").textContent = st.sim.reproduciendo ? "⏸ Pausar" : "▶ Reproducir";
+}
+async function paso() {
+  const e = st.sim.lista[st.sim.i];
+  if (!e) return;
+  st.sim.i++;
+  anadirFila(e, false);
+  marcarActual(e.id);
+  if (!st.sim.reproduciendo) mostrar(e);
+  botonesSim();
+  await animar(e);
+}
+async function reproducir() {
+  if (st.sim.reproduciendo) { st.sim.reproduciendo = false; botonesSim(); return; }
+  st.sim.reproduciendo = true;
+  botonesSim();
+  while (st.sim.reproduciendo && st.sim.i < st.sim.lista.length) {
+    const previo = st.sim.lista[st.sim.i - 1];
+    const e = st.sim.lista[st.sim.i];
+    // El ritmo sigue la historia real, comprimido: entre 0,15 y 1,5 s por hueco.
+    const hueco = previo ? Math.min(1500, Math.max(150, Date.parse(e.t_visto) - Date.parse(previo.t_visto))) : 0;
+    await dormir(hueco / st.velocidad);
+    if (!st.sim.reproduciendo) break;
+    paso();
+  }
+  st.sim.reproduciendo = false;
+  botonesSim();
+}
+function desdeElPrincipio() {
+  st.sim.i = 0; st.sim.reproduciendo = false;
+  reiniciarCuentas(); rehacerLista(); botonesSim();
+}
+async function repetirCadena(e) {
+  const cadena = await api("/cadena/" + encodeURIComponent(e.id)).catch(() => null);
+  if (!cadena) return;
+  if (st.modo !== "sim") await cambiarModo("sim");
+  st.sim.lista = cadena; st.sim.i = 0; st.sim.reproduciendo = false;
+  filtrar(null);
+  desdeElPrincipio();
+  $("detalle").textContent = "";
+  $("detalle").append(h("p", { class: "vacio" }, `Simulación de una cadena causal: ${cadena.length} eventos. Usa «Siguiente paso» o «Reproducir».`));
+}
+async function cambiarModo(modo) {
+  if (st.control) st.control.abort();
+  st.modo = modo;
+  st.sim.reproduciendo = false;
+  $("m-vivo").setAttribute("aria-pressed", modo === "vivo");
+  $("m-sim").setAttribute("aria-pressed", modo === "sim");
+  $("lista-titulo").textContent = modo === "vivo" ? "Eventos (los últimos arriba)" : "Eventos de la simulación (en orden)";
+  botonesSim();
+  if (modo === "vivo") modoVivo(); else await modoSimulacion();
+}
+
+// ---------- arranque ----------
+// Sin consola a la vista (es una app): los errores de la página salen en la franja de aviso.
+window.addEventListener("error", ev => aviso("Error del visor: " + ev.message));
+window.addEventListener("unhandledrejection", ev => aviso("Error del visor: " + (ev.reason && ev.reason.message || ev.reason)));
+$("leyenda").append(...CATEGORIAS.map(([c, t]) => h("span", {}, h("span", { class: "punto", style: `background:${color(c)}` }), t)));
+$("m-vivo").onclick = () => st.modo !== "vivo" && cambiarModo("vivo");
+$("m-sim").onclick = () => st.modo !== "sim" && cambiarModo("sim");
+$("b-play").onclick = reproducir;
+$("b-paso").onclick = paso;
+$("b-inicio").onclick = desdeElPrincipio;
+$("b-vel").onchange = ev => { st.velocidad = Number(ev.target.value) || 1; };
+$("b-limpiar-filtro").onclick = () => filtrar(null);
+$("b-reglas").onclick = async () => {
+  try { await api($("b-reglas").dataset.pausado ? "/reanudar" : "/pausa", { method: "POST" }); } catch (err) { aviso(err.message); }
+  refrescarEstado();
+};
+st.nodos.set("bus", { tipo: "bus", clave: "bus", etiqueta: "bus", n: 0, x: 0, y: 0, g: null });
+(async () => {
+  while (!(await refrescarEstado())) await dormir(3000);
+  setInterval(refrescarEstado, 3000);
+  cambiarModo("vivo");
+})();
+</script>
+</body>
+</html>

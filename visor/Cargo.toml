@@ -1,0 +1,17 @@
+[package]
+name = "ev-visor"
+version = "0.1.0"
+edition = "2021"
+description = "App de escritorio del visor del bus de eventos: ventana propia con WebView2"
+
+[[bin]]
+name = "ev-visor"
+path = "src/main.rs"
+
+# Las mismas versiones que compila Spur: ya están en la caché de D:\dev\cargo.
+[dependencies]
+tao = "=0.35.3"
+wry = "=0.55.1"
+
+[profile.release]
+codegen-units = 4

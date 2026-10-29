@@ -1,0 +1,23 @@
+# Reglas del bus de eventos (v0). Se cargan al arrancar: `ev servir --reglas D:\dev\eventos\reglas.toml`.
+# Límites: profundidad (cuántos agentes encadenados como máximo), por_hora, a_la_vez y max_agentes (global).
+# La v0 solo lanza agentes de lectura (claude --restricted, sin Bash ni edición; solo el MCP del bus).
+
+max_agentes = 1
+
+[[regla]]
+nombre = "diagnosticar-pruebas-rotas"
+tipo = "proceso.fin"
+fuente = "proc:cargo test*"
+arnes = "claude"
+modelo = "sonnet"
+permisos = "lectura"
+directorio = 'D:\dev\eventos\ejemplos\roto'
+encargo = """
+Unas pruebas de Rust acaban de fallar. Busca en el bus sus líneas (misma correlación), lee el código si hace falta \
+y explica en tres frases como máximo qué falla y por qué. Publica el resultado con publicar, tipo «diagnostico»."""
+por_hora = 4
+profundidad = 1
+minutos = 5
+
+[regla.atributos_distinto]
+codigo = 0

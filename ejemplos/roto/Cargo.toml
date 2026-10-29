@@ -1,0 +1,8 @@
+[package]
+name = "roto"
+version = "0.1.0"
+edition = "2021"
+description = "Ejemplo con una prueba rota a propósito, para el criterio de éxito de la v0 del bus"
+
+[lib]
+path = "src/lib.rs"
