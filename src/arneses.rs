@@ -130,7 +130,10 @@ fn claude(bus: &dyn Bus, regla: &Regla, disparo: &Evento, base: Evento) {
     cmd.args(["-p", "--output-format", "stream-json", "--verbose", "--restricted", "--strict-mcp-config", "--mcp-config"])
         .arg(&config)
         .args(["--allowedTools", "mcp__eventos__publicar,mcp__eventos__buscar,mcp__eventos__esperar"])
-        .args(["--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch"]);
+        .args(["--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch"])
+        // Sin --tools, --restricted deja herramientas con efectos fuera (Artifact, SendMessage, PushNotification,
+        // EnterWorktree, Task...). Con él, de las propias de Claude Code solo quedan estas tres; el MCP del bus sigue.
+        .args(["--tools", "Read,Grep,Glob"]);
     if let Some(m) = &regla.modelo {
         cmd.args(["--model", m]);
     }

@@ -1,6 +1,6 @@
 # Reglas del bus de eventos (v0). Se cargan al arrancar: `ev servir --reglas D:\dev\eventos\reglas.toml`.
 # Límites: profundidad (cuántos agentes encadenados como máximo), por_hora, a_la_vez y max_agentes (global).
-# La v0 solo lanza agentes de lectura (claude --restricted, sin Bash ni edición; solo el MCP del bus).
+# La v0 solo lanza agentes de lectura (claude --restricted con --tools Read,Grep,Glob: sin Bash ni edición; solo el MCP del bus).
 
 max_agentes = 1
 
@@ -21,3 +21,22 @@ minutos = 5
 
 [regla.atributos_distinto]
 codigo = 0
+
+# Opción D, primera porción: una puerta de La Fábrica que falla en la última pasada de una tarea despierta a un agente
+# de lectura que deja una nota para retomarla. El puente está en D:\dev\Fabrica\src-tauri\src\bus.rs. El agente solo
+# puede leer dentro de su directorio (--restricted): los proyectos de La Fábrica viven en F:\La fabrica.
+[[regla]]
+nombre = "diagnosticar-puerta-fabrica"
+tipo = "fabrica.puerta.fallo"
+arnes = "claude"
+modelo = "sonnet"
+permisos = "lectura"
+directorio = 'F:\La fabrica'
+encargo = """
+Una puerta de calidad de La Fábrica ha fallado en la última pasada de una tarea. Busca en el bus los eventos de su \
+misma correlación (el inicio y el final de la tarea) y, si hace falta, lee el código del proyecto: su carpeta va en el \
+atributo «proyecto_dir». Escribe una nota para retomar la tarea en cuatro frases como máximo: qué falla, por qué, qué \
+cambió y la siguiente orden concreta. Publícala con publicar, tipo «nota.reanudacion»."""
+por_hora = 6
+profundidad = 1
+minutos = 5

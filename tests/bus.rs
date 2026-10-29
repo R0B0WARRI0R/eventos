@@ -424,8 +424,10 @@ fn nada_del_evento_sale_de_sus_etiquetas_ni_el_agente_lleva_permisos_peligrosos(
     }
 
     let args = std::fs::read_to_string(dir.join("args.txt")).expect("argumentos");
+    // --tools ya no está en la lista: el agente lo lleva, y su valor exacto (solo lectura) lo exige
+    // el_agente_solo_tiene_las_herramientas_de_lectura.
     for peligroso in
-        ["dangerously", "bypassPermissions", "--permission-mode", "--always-approve", "acceptEdits", "--yolo", "--tools", "--add-dir"]
+        ["dangerously", "bypassPermissions", "--permission-mode", "--always-approve", "acceptEdits", "--yolo", "--add-dir"]
     {
         assert!(!args.contains(peligroso), "el agente no debe llevar {peligroso}: {args}");
     }
@@ -447,6 +449,27 @@ fn nada_del_evento_sale_de_sus_etiquetas_ni_el_agente_lleva_permisos_peligrosos(
     assert_eq!(env["EV_PUERTO"].as_str(), Some(d.puerto.to_string().as_str()));
     assert_eq!(env["EV_REGLA"].as_str(), Some("diagnosticar"));
     assert!(Path::new(env["EV_DIR"].as_str().expect("EV_DIR")).is_absolute());
+}
+
+#[test]
+fn el_agente_solo_tiene_las_herramientas_de_lectura() {
+    // --restricted quita las herramientas que ejecutan órdenes, pero deja otras con efectos fuera (publicar artefactos,
+    // mensajes a otras sesiones, notificaciones, worktrees, subagentes). Con --tools solo quedan estas tres: comprobado
+    // con claude 2.1.312 el 2026-10-29 en la lista de herramientas que anuncia al arrancar.
+    let dir = carpeta_temporal("herramientas");
+    let falso = claude_falso(&dir);
+    let d = Demonio::arrancar_en(
+        dir.clone(),
+        Some("[[regla]]\nnombre = \"diagnosticar\"\ntipo = \"fallo\"\narnes = \"claude\"\nencargo = \"Diagnostica.\"\n"),
+        &[("EV_CLAUDE", falso.display().to_string())],
+    );
+    d.publicar(json!({ "fuente": "prueba", "tipo": "fallo", "cuerpo": "x" }));
+    d.ver_al_menos(&[("tipo", "agente.fin")], 1);
+    let args = std::fs::read_to_string(dir.join("args.txt")).expect("argumentos");
+    let tokens: Vec<&str> = args.split_whitespace().map(|t| t.trim_matches('"')).collect();
+    let posiciones: Vec<usize> = tokens.iter().enumerate().filter(|(_, t)| **t == "--tools").map(|(i, _)| i).collect();
+    assert_eq!(posiciones.len(), 1, "--tools una sola vez: {args}");
+    assert_eq!(tokens.get(posiciones[0] + 1).copied(), Some("Read,Grep,Glob"), "{args}");
 }
 
 #[test]

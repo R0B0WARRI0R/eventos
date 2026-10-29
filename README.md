@@ -47,6 +47,16 @@ ev servir --reglas D:\dev\eventos\reglas.toml
 - **Hooks:** añade `D:\dev\target\release\ev.exe hook` como comando en los eventos que interesen (por ejemplo, `PostToolUse` y `Stop`). No escribe nada en su salida y siempre termina con 0, así que no frena a Claude Code.
 - **MCP para que cualquier sesión publique y lea:** `claude mcp add eventos -s user -- D:\dev\target\release\ev.exe mcp`.
 
+## La Fábrica (desde 2026-10-29)
+
+La Fábrica publica tres tipos de evento, todos con la correlación `fabrica:<proyecto>:<tarea>`:
+
+- `fabrica.tarea.inicio`: la tarea pasa a en curso (cuerpo: el título).
+- `fabrica.tarea.fin`: la tarea acaba; `atributos.puertas_ok` dice si pasaron sus puertas (nulo si no tenía).
+- `fabrica.puerta.fallo`: uno por cada puerta que falló en la última pasada (cuerpo: el final de su salida).
+
+Si el bus no responde, esperan en `datos\pendientes.jsonl` sin la salida de las puertas. El puente está en `D:\dev\Fabrica\src-tauri\src\bus.rs`. La regla `diagnosticar-puerta-fabrica` despierta con cada fallo a un agente de lectura que publica una `nota.reanudacion`: qué falla, por qué, qué cambió y la siguiente orden. Comprobado el 2026-10-29 con Claude real: 24 s y sin tocar ningún fichero.
+
 ## Reglas
 
 Las reglas están en `reglas.toml`. Cada una dice: cuando llegue un evento de este `tipo` (y, si se indica, con esta `fuente`, estos `atributos` o `atributos_distinto`), llama a este `arnes` con este `encargo`.
@@ -67,7 +77,7 @@ Las reglas están en `reglas.toml`. Cada una dice: cuando llegue un evento de es
 
 **Arneses de la v0:**
 
-- `claude`: `claude -p --restricted --strict-mcp-config`, solo de lectura. Sin Bash ni edición, sin tus hooks ni tus ajustes de usuario, y con el MCP del bus como único MCP.
+- `claude`: `claude -p --restricted --strict-mcp-config --tools "Read,Grep,Glob"`, solo de lectura. De las herramientas propias de Claude Code solo tiene Read, Grep y Glob; sin tus hooks ni tus ajustes de usuario, y con el MCP del bus como único MCP.
 - `eco`: para pruebas.
 
 El evento que dispara la regla entra en el encargo entre etiquetas `<evento>`, como dato y no como orden. Todo lo que hace el agente vuelve al bus como hijos de ese evento.
@@ -106,7 +116,7 @@ El evento que dispara la regla entra en el encargo entre etiquetas `<evento>`, c
   - `passphrase=` y `pwd=`;
   - opciones cortas como `docker login -p …`;
   - JSON con comillas simples o con tres niveles de escape.
-- **La lectura de solo lectura la garantiza `--restricted`.** Las pruebas vigilan además la lista exacta de herramientas y que no aparezcan las opciones peligrosas conocidas.
+- **La solo lectura la dan `--tools "Read,Grep,Glob"` y `--disallowedTools`, no `--restricted` por sí solo.** `--restricted` quita las herramientas que ejecutan órdenes, pero deja otras con efectos fuera (publicar artefactos, mensajes a otras sesiones, notificaciones, worktrees, subagentes): comprobado con claude 2.1.312 el 2026-10-29 en la lista que anuncia al arrancar. Las pruebas vigilan la lista exacta de herramientas y que no aparezcan las opciones peligrosas conocidas.
 
 ## Dependencias
 
@@ -127,9 +137,9 @@ Cada una cubre algo que la biblioteca estándar no trae:
 cargo test --jobs 2
 ```
 
-Son 29:
+Son 30:
 
-- 21 contra el servicio de verdad, en un puerto libre y con su propia carpeta. Once de ellas salen de las dos revisiones independientes, una por cada objeción.
+- 22 contra el servicio de verdad, en un puerto libre y con su propia carpeta. Once de ellas salen de las dos revisiones independientes, una por cada objeción, y otra de la comprobación de herramientas del 2026-10-29.
 - 8 de piezas sueltas.
 
 El arnés de Claude se prueba con un `claude` falso (un `.cmd`) que guarda sus argumentos y su entrada.
