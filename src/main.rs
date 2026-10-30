@@ -2,7 +2,7 @@ use eventos::cliente::{Cliente, Envio};
 use eventos::evento::Evento;
 use eventos::servidor::{self, Config};
 use eventos::texto::recortar;
-use eventos::{carpeta_datos, hook, mcp, puerto, run, Resultado};
+use eventos::{carpeta_datos, enganchar, hook, mcp, puerto, run, Resultado};
 use serde_json::Value;
 
 const AYUDA: &str = "ev — bus de eventos universal (v0)
@@ -11,6 +11,7 @@ const AYUDA: &str = "ev — bus de eventos universal (v0)
   ev run -- <orden> [args...]       lanza la orden y guarda cada línea, el inicio y el final como eventos
   ev hook                           adaptador para los hooks de Claude Code (JSON por la entrada estándar)
   ev mcp                            servidor MCP por stdio: publicar, buscar, esperar
+  ev enganchar [--config F]         vigila desde fuera las apps de enganches.toml (abrir, cerrar, cuelgues, caídas)
   ev publicar <tipo> [texto...]     publica un evento a mano
   ev buscar <palabras...> [--limite N]
   ev ver [--tipo T] [--fuente F] [--correlacion C] [--causa I] [--desde T] [--hasta T] [--limite N]
@@ -52,6 +53,14 @@ fn ejecutar(args: &[String]) -> Resultado<i32> {
             Ok(run::ejecutar(orden))
         }
         Some("hook") => Ok(hook::recibir()),
+        Some("enganchar") => {
+            let o = enganchar::Opciones {
+                config: bandera(resto, "--config").map(Into::into).unwrap_or_else(|| r"D:\dev\eventos\enganches.toml".into()),
+                segundos: bandera(resto, "--segundos").map(|s| s.parse()).transpose()?,
+            };
+            enganchar::ejecutar(&o)?;
+            Ok(0)
+        }
         Some("mcp") => Ok(mcp::servir()),
         Some("publicar") => {
             let tipo = resto.first().ok_or("uso: ev publicar <tipo> [texto...]")?;

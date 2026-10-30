@@ -6,6 +6,8 @@
 pub mod almacen;
 pub mod arneses;
 pub mod cliente;
+pub mod enganchar;
+pub mod enganches;
 pub mod evento;
 pub mod hook;
 pub mod mcp;

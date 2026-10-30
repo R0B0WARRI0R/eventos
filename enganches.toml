@@ -1,0 +1,38 @@
+# Enganches del bus: apps que se vigilan desde fuera (se abren, se cierran, dejan de responder, se caen).
+# Cargado por: ev enganchar --config D:\dev\eventos\enganches.toml
+# Diseño en docs/2026-10-30-diseno-enganches.md. Nada se vigila si no está aquí.
+# Elegidas por Victoria el 2026-10-30: Constructo, Obsidian y Brave.
+
+por_segundo_global = 50   # tope de eventos por segundo de todos los enganches juntos
+colgada_segundos = 10     # segundos colgada antes de avisar, además de los 5 que espera Windows
+
+[[app]]
+slug = "constructo"
+nombre = "Constructo"
+coincide_exe = "Constructo.exe"
+modo = "fuera"
+titulo = false            # app.titulo: cambios de título de sus ventanas
+por_hora = 120
+
+[[app]]
+slug = "obsidian"
+nombre = "Obsidian"
+coincide_exe = "Obsidian.exe"
+modo = "fuera"
+titulo = false
+por_hora = 120
+
+[[app]]
+slug = "brave"
+nombre = "Brave"
+coincide_exe = "brave.exe"
+modo = "fuera"
+titulo = false            # el título de Brave es el de la página: mejor no guardarlo sin pedirlo
+por_hora = 120
+
+# Ventanita de avisos de XANA (D:\Ari\avisos) cuando una app deja de responder o se cae. Pedido por Victoria el
+# 2026-10-31. Sale arriba a la derecha con su sonido, en unos 15 s como mucho (lo que tarda el vigilante en mirar).
+# {cuerpo} es el texto del evento («Constructo no responde (lleva al menos 15 s)»).
+[aviso]
+tipos = ["app.sin_respuesta", "app.caida"]
+orden = ['C:\Users\jroca\AppData\Local\Programs\Python\Python312\python.exe', '-X', 'utf8', 'D:\Ari\avisos\avisos.py', 'nuevo', '{cuerpo}', '1s']

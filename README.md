@@ -109,6 +109,20 @@ En el panel de tareas, integrada queda lista para revisar; aprobada sin integrar
 
 Las reglas `diagnosticar-quorum-rechazada` y `diagnosticar-quorum-error` (desde 2026-10-30) despiertan con esos dos finales al agente de lectura, que lee los eventos de la tarea (y, si hace falta, el código en `D:\dev`, donde están los proyectos y sus worktrees en `.quorum`) y publica una `nota.reanudacion`: qué se pedía, qué la tumbó, qué falta y la siguiente orden. El panel la engancha bajo la tarea. Una puerta fallida no dispara nada, porque Quórum aún tiene rondas. Comprobado el 2026-10-30 con Claude real en un bus aparte: 13 s, solo `buscar` y `publicar`, sin tocar ficheros. Si el bus estaba parado, la tarea llega de la cola sin el detalle del final y el agente tiene menos con qué trabajar.
 
+## Enganches (desde 2026-10-31)
+
+`ev enganchar --config D:\dev\eventos\enganches.toml` vigila desde fuera las apps de `enganches.toml` y publica, con la fuente `app:<slug>` y la correlación `app:<slug>:<arranque>`:
+
+- `app.inicio` y `app.fin`: se abre (o ya estaba abierta al empezar) y se cierra. `app.fin` lleva el código de salida y `atributos.cierre`, que vale `excepcion` si el código es una excepción de Windows y `normal` en otro caso.
+- `app.sin_respuesta` (aviso) y `app.respuesta`: la ventana lleva `colgada_segundos` sin responder, además de los 5 s que espera Windows, y luego vuelve.
+- `app.caida` (error): la caída que anota Windows en el registro Application (proveedor `Application Error`, Id 1000).
+- `app.titulo`: cambios de título. Está apagado por defecto y es `confianza: externa`.
+- Además, `enganche.tanteo` (uno por app al arrancar) y `enganche.tope` (cuando una app llena su tope por hora).
+
+La sección `[aviso]` de `enganches.toml` lanza una orden con cada evento de los tipos que elija, sin consola y sin esperarla. Hoy, con `app.sin_respuesta` y `app.caida`, lanza la ventanita de avisos de XANA (`D:\Ari\avisos`). En la orden, `{cuerpo}`, `{app}` y `{tipo}` se sustituyen por los datos del evento. Cada uno va como argumento aparte, sin pasar por ninguna consola.
+
+No inyecta nada en las apps ni necesita administrador. Hoy vigila Constructo, Obsidian y Brave. Diseño completo y fases siguientes en `docs/2026-10-30-diseno-enganches.md`. Las pruebas de escritorio se lanzan con `cargo test --test enganches -- --ignored --test-threads=1`.
+
 ## Reglas
 
 Las reglas están en `reglas.toml`. Cada una dice: cuando llegue un evento de este `tipo` (y, si se indica, con esta `fuente`, estos `atributos` o `atributos_distinto`), llama a este `arnes` con este `encargo`.

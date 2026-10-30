@@ -23,7 +23,22 @@ ulid = "1.2.1"
 ureq = { version = "2.12.1", default-features = false, features = ["json"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59.0", features = ["Win32_Globalization"] }
+windows-sys = { version = "0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_EventLog",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[[example]]
+# Doble de prueba de los enganches: una ventana que se abre, cambia de título, se cuelga o se cae a propósito.
+name = "doble_enganche"
+path = "ejemplos/doble_enganche.rs"
 
 [profile.release]
 codegen-units = 4
