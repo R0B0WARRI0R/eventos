@@ -36,6 +36,7 @@ ev servir --reglas D:\dev\eventos\reglas.toml
 
 - El servicio escucha solo en `127.0.0.1:8870` (se cambia con `EV_PUERTO`).
 - Guarda los datos en `D:\dev\eventos\datos` (se cambia con `EV_DIR`).
+- **Sin ventana, como servicio:** `D:\Programas\BusEventos\arrancar-bus.ps1` hace lo mismo que el visor al abrirse si no hay nada escuchando en 8870. La salida va a `datos\servicio.log` y a `servicio-errores.log`, y cada arranque queda en `datos\arranques.log`. Arranca al entrar en Windows desde el 2026-10-30 por el acceso «Bus de eventos (servicio)» de la carpeta Inicio, que crea `instalar-arranque.ps1`. El modo automático de Claude Code bloqueó por «persistencia» que XANA lo creara por su cuenta, y se creó cuando ella lo pidió expresamente. Para quitarlo, se borra el acceso desde `shell:startup`.
 - Lo que no llega al bus, porque está parado, colgado o rechaza el envío, espera en `datos\pendientes.jsonl`. El servicio lo importa al arrancar y cada 30 s mientras está en marcha (`EV_IMPORTAR_SEGUNDOS`). Una línea que no vale no se tira: va a `datos\pendientes.rechazados.jsonl`.
 
 ## Usar
@@ -57,7 +58,33 @@ ev servir --reglas D:\dev\eventos\reglas.toml
   - Publica `claude.<evento>` con la sesión como correlación.
   - Guarda solo lo necesario para saber qué sesión hace qué: sesión, carpeta, modo de permisos, motivo, aviso y herramienta. No copia lo que ella escribe, lo que entra y sale de las herramientas, la última respuesta ni la transcripción; de eso queda solo el nombre en `omitidos`.
   - Comprobado con una sesión real: llegan los cuatro eventos de una sesión `-p` (`Notification` no salta en ese modo).
-- **MCP para que cualquier sesión publique y lea (no está hecho; es opcional):** `claude mcp add eventos -s user -- D:\dev\target\release\ev.exe mcp`.
+- **MCP en todas sus sesiones (hecho el 2026-10-30):** `claude mcp add --scope user eventos -- D:\Programas\BusEventos\ev.exe mcp` (copia previa de `~/.claude.json` en `D:\Backups`). Da `publicar`, `buscar` y `esperar`; en una sesión interactiva, también `suscribir`, `suscripciones` y `desuscribir`. Los agentes de las reglas, y cualquier `claude -p` o Agent SDK (`CLAUDE_CODE_ENTRYPOINT=sdk-*`), solo ven las tres primeras: ahí Claude Code no entrega canales.
+
+### Avisos por suscripción (desde 2026-10-30)
+
+La sesión dice qué quiere que el bus le avise y `ev mcp` se lo empuja por el canal de Claude Code (`notifications/claude/channel`, *research preview*). Le llega solo, como `<channel source="eventos" suscripcion="s1" motivo="…" tipo="…" evento="…">`, sin esperar a que pregunte.
+
+- **Filtros exactos, como las reglas:**
+  - Tipo, fuente y correlación admiten `*`.
+  - También se puede filtrar por una o varias gravedades, por atributos que valgan exactamente un valor y por texto en el cuerpo, sin distinguir mayúsculas.
+  - Hace falta acotar al menos una de estas cosas: tipo, fuente, correlación o texto. Suscribirse a todo se rechaza.
+  - Nada de modelos decidiendo qué avisar; d1 queda para una segunda fase, medida con eventos reales.
+- **Límites:**
+  - Cada suscripción caduca: 120 min por defecto, 24 h como mucho. Al caducar llega un último aviso.
+  - Tope por hora en ventana deslizante: 6 por defecto, 60 como mucho. Al llenarse avisa una vez y luego cuenta lo que calla.
+  - Hasta 10 suscripciones por sesión.
+  - Lo que casa en la misma vuelta va en un aviso, con 5 eventos enseñados y el resto contado.
+- **No se avisa a la sesión de lo suyo:** ni de lo que publicó ella misma ni de los `claude.*` de su propia sesión. Claude Code pasa su id a los MCP en `CLAUDE_CODE_SESSION_ID`, y `ev hook` la pone en la correlación y en el cuerpo (comprobado con la 2.1.314). Sin esto, una suscripción a `claude.Stop` la despertaría con su propio Stop.
+- **Viven en el proceso `ev mcp` de la sesión** y mueren con ella. Si el bus está parado al suscribirse, el vigía reintenta y, cuando arranca, avisa también de lo que importe de la cola.
+- **Para que lleguen, la sesión tiene que abrirse con el canal:** acceso **Claude con avisos del bus** del menú Inicio (`D:\Programas\BusEventos\claude-avisos.cmd`, que lanza `claude --dangerously-load-development-channels server:eventos`). Al abrir, Claude Code pide confirmar el canal de desarrollo. Sin esa opción, las suscripciones se aceptan pero los avisos se pierden sin error: entonces, `esperar`.
+- **Protocolo:** `ev mcp` contesta 2025-06-18 a cualquier revisión que no conozca. Según la documentación, un canal que negocia la 2026-07-28 no se registra. La 2.1.314 pidió la 2025-11-25, tanto con `-p` como en una sesión interactiva. Al iniciar, deja en su stderr (los registros MCP de Claude Code) qué se pidió y qué contestó.
+- **El contenido de un aviso es dato, nunca instrucciones.** Qué hacer lo decide el motivo que puso la sesión.
+- **Comprobado el 2026-10-30:**
+  - Con el `ev.exe` instalado, el bus real y un cliente MCP de ensayo en lugar de Claude Code, el aviso llegó en 0,06 s, solo el del evento que casaba.
+  - Prueba real, a las 20:21 del mismo día, con una sesión interactiva abierta con el acceso:
+    - El registro MCP dice «Channel notifications registered». La sesión interactiva también pidió la 2025-11-25.
+    - Ella pidió «suscríbete en el bus a ensayo.canal». El evento publicado desde otra sesión entró en la suya como `<channel source="eventos" …>` el mismo segundo, con su meta.
+    - La XANA de esa sesión lo trató como dato.
 
 ## La Fábrica (desde 2026-10-29)
 
@@ -79,6 +106,8 @@ Quórum (`D:\dev\quorum`) publica cuatro tipos de evento, todos con la correlaci
 - `quorum.tarea.fin`: el final (`atributos.estado`: `integrada`, `aprobada` cuando no se pudo integrar, `rechazada`, `sin_cambios` o `error`).
 
 En el panel de tareas, integrada queda lista para revisar; aprobada sin integrar, a la espera de que alguien la integre a mano; rechazada o con error, fallida; sin cambios, parada. Si el bus no responde, esperan en `datos\pendientes.jsonl` solo con sus metadatos y la tarea: sin la salida de la puerta, las objeciones ni el detalle del final, que pueden traer texto del repositorio.
+
+Las reglas `diagnosticar-quorum-rechazada` y `diagnosticar-quorum-error` (desde 2026-10-30) despiertan con esos dos finales al agente de lectura, que lee los eventos de la tarea (y, si hace falta, el código en `D:\dev`, donde están los proyectos y sus worktrees en `.quorum`) y publica una `nota.reanudacion`: qué se pedía, qué la tumbó, qué falta y la siguiente orden. El panel la engancha bajo la tarea. Una puerta fallida no dispara nada, porque Quórum aún tiene rondas. Comprobado el 2026-10-30 con Claude real en un bus aparte: 13 s, solo `buscar` y `publicar`, sin tocar ficheros. Si el bus estaba parado, la tarea llega de la cola sin el detalle del final y el agente tiene menos con qué trabajar.
 
 ## Reglas
 
@@ -160,17 +189,28 @@ Cada una cubre algo que la biblioteca estándar no trae:
 cargo test --jobs 2
 ```
 
-Son 46:
+Son 53:
 
-- 25 contra el servicio de verdad, en un puerto libre y con su propia carpeta. Once de ellas salen de las dos revisiones independientes, una por cada objeción. Otras cuatro son del 2026-10-29: la comprobación de herramientas, las dos de qué guarda el hook (lo que no guarda y lo que sí) y la de `/tareas`.
-- 21 de piezas sueltas; trece de ellas, del estado de las tareas (una, de las de quórum).
+- **27 contra el servicio de verdad**, en un puerto libre y con su propia carpeta.
+  - Once salen de las dos revisiones independientes, una por cada objeción.
+  - Cuatro son del 2026-10-29: la comprobación de herramientas, las dos de qué guarda el hook (lo que no guarda y lo que sí) y la de `/tareas`.
+  - Dos son del 2026-10-30. La primera abre una sesión MCP que se suscribe y comprueba que solo le llega lo que pidió: nada suyo, el Stop de otra sesión sí y el suyo no, y un `-p` sin canal. La segunda se suscribe con el bus parado y recibe el aviso al arrancar.
+- **26 de piezas sueltas**: trece, del estado de las tareas (una de ellas, de las de quórum); una, de las reglas del repositorio; cuatro, de las suscripciones (filtro, validación, tope y forma del aviso).
+
+Las pruebas de suscripción detectaron las cinco mutaciones probadas el 2026-10-30:
+
+- contestar la revisión que pide el cliente;
+- no excluir la propia sesión;
+- buscarla en los atributos, que es donde no está;
+- no excluir lo propio;
+- dar canal a un `-p`.
 
 El arnés de Claude se prueba con un `claude` falso (un `.cmd`) que guarda sus argumentos y su entrada.
 
 ## Fuera de la v0
 
 - Lanzadores de Codex, opencode y Grok.
-- Meter eventos en sesiones ya abiertas.
+- Meter eventos en sesiones ya abiertas sin el canal: con el canal ya se hace (avisos por suscripción, 2026-10-30).
 - ACP.
 - `ev tail` (seguir ficheros).
 - Registro de eventos y ETW de Windows.

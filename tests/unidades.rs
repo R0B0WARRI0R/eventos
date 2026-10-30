@@ -7,6 +7,7 @@ use eventos::almacen::Almacen;
 use eventos::tareas::{derivar, desde, horas, Estado, TIPOS};
 use std::time::{Duration, UNIX_EPOCH};
 use eventos::texto::{decodificar, decodificar_con, redactar};
+use eventos::suscripciones::{Admision, Suscripcion};
 use serde_json::{json, Value};
 
 /// Un evento ya guardado (con id, seq y hora de llegada) para las pruebas de tareas.
@@ -356,6 +357,31 @@ codigo = 0"#,
     assert!(!coincide(&r, &e), "otra fuente no casa");
 }
 
+#[test]
+fn las_reglas_del_repositorio_despiertan_al_agente_con_cada_fallo_de_quorum_y_de_la_fabrica() {
+    let ruta = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reglas.toml");
+    let fichero = cargar(&ruta).expect("el reglas.toml del repositorio tiene que cargar");
+    let disparadas = |e: &Evento| fichero.reglas.iter().filter(|r| coincide(r, e)).map(|r| r.nombre.clone()).collect::<Vec<_>>();
+    let fin_de_quorum = |estado: &str| {
+        let mut e = Evento::nuevo("quorum:p", "quorum.tarea.fin", json!(format!("{estado}: detalle")));
+        e.atributos = json!({ "estado": estado, "rondas": 2, "proyecto": "p", "proyecto_dir": "D:/dev/p", "tarea": "t-a1b2" });
+        e
+    };
+    assert_eq!(disparadas(&fin_de_quorum("rechazada")), ["diagnosticar-quorum-rechazada"]);
+    assert_eq!(disparadas(&fin_de_quorum("error")), ["diagnosticar-quorum-error"]);
+    for estado in ["integrada", "aprobada", "sin_cambios"] {
+        assert!(disparadas(&fin_de_quorum(estado)).is_empty(), "una tarea {estado} no despierta a nadie");
+    }
+    let mut puerta = Evento::nuevo("quorum:p", "quorum.puerta", json!("1 prueba falla"));
+    puerta.atributos = json!({ "ronda": 1, "ok": false });
+    assert!(disparadas(&puerta).is_empty(), "una puerta fallida no es el final: Quórum aún tiene rondas");
+    let fabrica = Evento::nuevo("fabrica:p", "fabrica.puerta.fallo", json!("cargo test falla"));
+    assert_eq!(disparadas(&fabrica), ["diagnosticar-puerta-fabrica"]);
+    for r in fichero.reglas.iter().filter(|r| r.arnes == "claude") {
+        assert!(r.directorio.as_deref().is_some_and(|d| d.is_absolute()), "«{}» tiene que fijar su directorio", r.nombre);
+    }
+}
+
 fn fichero_temporal(nombre: &str, texto: &str) -> std::path::PathBuf {
     let ruta = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(nombre);
     std::fs::write(&ruta, texto).expect("escribir fichero de prueba");
@@ -399,4 +425,93 @@ fn traduce_la_salida_stream_json_de_claude() {
     assert_eq!(tipos("esto no es json"), ["agente.salida"]);
     assert!(tipos(r#"{"type":"user","message":{}}"#).is_empty());
     assert!(tipos("   ").is_empty());
+}
+
+fn suscripcion(args: Value) -> Suscripcion {
+    Suscripcion::desde_args("s1".into(), &args, std::time::Instant::now()).expect("suscripción válida")
+}
+
+#[test]
+fn una_suscripcion_casa_por_tipo_fuente_correlacion_gravedad_atributos_y_texto() {
+    let s = suscripcion(json!({ "motivo": "m", "tipo": "quorum.*", "fuente": "quorum:*", "gravedad": ["error", "aviso"],
+        "atributos": { "estado": "rechazada" }, "texto": "LISTA VACÍA" }));
+    let mut e = Evento::nuevo("quorum:p", "quorum.tarea.fin", json!("rechazada: falta la lista vacía"));
+    e.gravedad = Some("error".into());
+    e.atributos = json!({ "estado": "rechazada" });
+    assert!(s.coincide(&e));
+    let cambia = |f: &dyn Fn(&mut Evento)| {
+        let mut otro = e.clone();
+        f(&mut otro);
+        s.coincide(&otro)
+    };
+    assert!(!cambia(&|x| x.tipo = "fabrica.tarea.fin".into()), "otro tipo");
+    assert!(!cambia(&|x| x.fuente = "fabrica:p".into()), "otra fuente");
+    assert!(!cambia(&|x| x.gravedad = Some("info".into())), "otra gravedad");
+    assert!(!cambia(&|x| x.gravedad = None), "sin gravedad");
+    assert!(!cambia(&|x| x.atributos = json!({ "estado": "integrada" })), "otro atributo");
+    assert!(!cambia(&|x| x.cuerpo = json!("integrada")), "sin el texto");
+
+    let por_correlacion = suscripcion(json!({ "motivo": "m", "correlacion": "quorum:p:*" }));
+    assert!(!por_correlacion.coincide(&e), "un evento sin correlación no casa con una que la pide");
+    e.correlacion = Some("quorum:p:suma-a1b2".into());
+    assert!(por_correlacion.coincide(&e));
+}
+
+#[test]
+fn una_suscripcion_sin_acotar_o_con_datos_malos_se_rechaza_y_los_limites_se_ajustan() {
+    let ahora = std::time::Instant::now();
+    let error = |args: Value| Suscripcion::desde_args("s1".into(), &args, ahora).expect_err("debería rechazarse");
+    assert!(error(json!({ "motivo": "todo" })).contains("al menos"));
+    assert!(error(json!({ "motivo": "todo", "tipo": "*", "fuente": "**" })).contains("al menos"));
+    assert!(error(json!({ "motivo": "m", "tipo": "t", "gravedad": "grave" })).contains("gravedad"));
+    assert!(error(json!({ "motivo": "m", "tipo": "t", "atributos": [1] })).contains("atributos"));
+    let s = suscripcion(json!({ "motivo": "m", "tipo": "t", "minutos": 100000, "por_hora": 0 }));
+    assert_eq!((s.minutos, s.por_hora), (1440, 1));
+    let s = Suscripcion::desde_args("s1".into(), &json!({ "motivo": "m", "tipo": "t" }), ahora).expect("válida");
+    assert_eq!((s.minutos, s.por_hora), (120, 6));
+    assert!(!s.caducada(ahora + Duration::from_secs(119 * 60)));
+    assert!(s.caducada(ahora + Duration::from_secs(120 * 60)));
+}
+
+#[test]
+fn el_tope_por_hora_avisa_una_vez_cuenta_lo_callado_y_se_libera_con_la_ventana() {
+    let t0 = std::time::Instant::now();
+    let mut s = Suscripcion::desde_args("s1".into(), &json!({ "motivo": "m", "tipo": "t", "por_hora": 2 }), t0).expect("válida");
+    assert_eq!(s.admitir(t0, 1), Admision::Avisar(0));
+    assert_eq!(s.admitir(t0 + Duration::from_secs(60), 1), Admision::Avisar(0));
+    assert_eq!(s.admitir(t0 + Duration::from_secs(120), 1), Admision::Tope);
+    assert_eq!(s.admitir(t0 + Duration::from_secs(180), 3), Admision::Callar);
+    assert_eq!(s.callados, 4);
+    // A la hora del primer aviso se libera un hueco, y ese aviso cuenta lo que se calló.
+    assert_eq!(s.admitir(t0 + Duration::from_secs(3600), 1), Admision::Avisar(4));
+    assert_eq!(s.admitir(t0 + Duration::from_secs(3601), 1), Admision::Tope, "el tope vuelve a avisar tras liberarse");
+    assert_eq!(s.avisados, 3);
+}
+
+#[test]
+fn el_aviso_ensena_cinco_eventos_cuenta_el_resto_y_su_meta_son_identificadores_con_texto() {
+    let s = suscripcion(json!({ "motivo": "pruebas rotas en Eventos", "tipo": "proceso.fin" }));
+    let eventos: Vec<Evento> = (0..7)
+        .map(|i| {
+            let mut e = ev(i + 1, &format!("id{i}"), "proceso.fin", "c-1", json!(format!("fallo {i}")), json!({}));
+            e.gravedad = Some(if i == 3 { "error" } else { "aviso" }.into());
+            e
+        })
+        .collect();
+    let refs: Vec<&Evento> = eventos.iter().collect();
+    let aviso = s.aviso(&refs, 2);
+    let contenido = aviso["content"].as_str().expect("contenido");
+    assert!(contenido.contains("fallo 4") && !contenido.contains("fallo 5"), "cinco y no más: {contenido}");
+    assert!(contenido.contains("y 2 más") && contenido.contains("calló 2"), "{contenido}");
+    assert!(contenido.starts_with("[18:00:01 UTC] proceso.fin · prueba · aviso"), "{contenido}");
+    let meta = aviso["meta"].as_object().expect("meta");
+    assert_eq!((meta["suscripcion"].as_str(), meta["evento"].as_str(), meta["eventos"].as_str()), (Some("s1"), Some("id0"), Some("7")));
+    assert_eq!((meta["gravedad"].as_str(), meta["callados"].as_str(), meta["correlacion"].as_str()), (Some("error"), Some("2"), Some("c-1")));
+    for (k, v) in meta {
+        assert!(k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && v.is_string(), "{k}={v}");
+    }
+    for aviso in [s.aviso_de_tope(), s.aviso_de_caducidad()] {
+        assert!(aviso["meta"].as_object().expect("meta").values().all(Value::is_string), "{aviso}");
+        assert!(aviso["content"].as_str().unwrap_or("").contains("s1"), "{aviso}");
+    }
 }

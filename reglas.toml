@@ -40,3 +40,48 @@ cambió y la siguiente orden concreta. Publícala con publicar, tipo «nota.rean
 por_hora = 6
 profundidad = 1
 minutos = 5
+
+# Quórum (D:\dev\quorum): una tarea rechazada o con error despierta al mismo agente de lectura. Las reglas casan valores
+# exactos, así que van dos, una por estado. Quórum se lanza sobre proyectos de D:\dev y deja el worktree de una tarea sin
+# integrar en .quorum\<proyecto>\<tarea>\arbol, junto a la carpeta del repositorio: los dos quedan dentro del directorio.
+[[regla]]
+nombre = "diagnosticar-quorum-rechazada"
+tipo = "quorum.tarea.fin"
+arnes = "claude"
+modelo = "sonnet"
+permisos = "lectura"
+directorio = 'D:\dev'
+encargo = """
+Una tarea de Quórum ha terminado rechazada: los revisores no la aprobaron. Busca en el bus los eventos de su misma \
+correlación: el inicio (la tarea pedida y la rama), cada puerta (la salida de las pruebas) y cada voto (las objeciones \
+de los revisores). Si hace falta, lee el código: el repositorio va en el atributo «proyecto_dir» y el worktree de la \
+tarea queda en .quorum\\<proyecto>\\<tarea>\\arbol, junto a la carpeta del repositorio. Escribe una nota para retomar \
+la tarea en cuatro frases como máximo: qué se pedía, qué objeción o qué prueba la tumbó, qué falta y la siguiente orden \
+concreta. Publícala con publicar, tipo «nota.reanudacion»."""
+por_hora = 4
+profundidad = 1
+minutos = 5
+
+[regla.atributos]
+estado = "rechazada"
+
+[[regla]]
+nombre = "diagnosticar-quorum-error"
+tipo = "quorum.tarea.fin"
+arnes = "claude"
+modelo = "sonnet"
+permisos = "lectura"
+directorio = 'D:\dev'
+encargo = """
+Una tarea de Quórum ha terminado con error: se cortó antes de que los revisores decidieran. Busca en el bus los eventos \
+de su misma correlación: el inicio (la tarea pedida y la rama), las puertas y los votos que llegaran, y el final, cuyo \
+cuerpo trae el error. Si hace falta, lee el código: el repositorio va en el atributo «proyecto_dir» y el worktree de la \
+tarea queda en .quorum\\<proyecto>\\<tarea>\\arbol, junto a la carpeta del repositorio. Escribe una nota para retomar \
+la tarea en cuatro frases como máximo: qué se pedía, dónde se cortó, por qué y la siguiente orden concreta. Publícala \
+con publicar, tipo «nota.reanudacion»."""
+por_hora = 4
+profundidad = 1
+minutos = 5
+
+[regla.atributos]
+estado = "error"

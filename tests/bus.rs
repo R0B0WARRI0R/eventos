@@ -233,7 +233,8 @@ fn el_mcp_publica_en_la_cadena_de_su_agente_y_busca() {
     assert_eq!(respuestas[0]["result"]["serverInfo"]["name"], "eventos");
     assert_eq!(respuestas[0]["result"]["protocolVersion"], "2025-06-18");
     let nombres: Vec<&str> = respuestas[1]["result"]["tools"].as_array().expect("tools").iter().filter_map(|t| t["name"].as_str()).collect();
-    assert_eq!(nombres, ["publicar", "buscar", "esperar"]);
+    assert_eq!(nombres, ["publicar", "buscar", "esperar"], "un agente de una regla no se suscribe");
+    assert!(respuestas[0]["result"]["capabilities"].get("experimental").is_none(), "ni ofrece el canal (corre con -p)");
     assert!(respuestas[2]["result"]["content"][0]["text"].as_str().unwrap_or("").starts_with("publicado: "));
     let encontrados: Vec<Value> = serde_json::from_str(respuestas[3]["result"]["content"][0]["text"].as_str().expect("texto")).expect("lista");
     assert_eq!(cuerpos(&encontrados), ["todo bien"]);
@@ -242,6 +243,206 @@ fn el_mcp_publica_en_la_cadena_de_su_agente_y_busca() {
     let e = &d.ver(&[("tipo", "diagnostico")])[0];
     assert_eq!((e["causa"].as_str(), e["profundidad"].as_i64()), (Some("01CAUSAINVENTADA"), Some(2)));
     assert_eq!((e["fuente"].as_str(), e["correlacion"].as_str()), (Some("agente:prueba"), Some("c-1")));
+}
+
+/// Un `ev mcp` de sesión con la entrada abierta: lo que escribe llega por un canal, respuestas y avisos mezclados.
+struct SesionMcp {
+    hijo: Child,
+    entrada: std::process::ChildStdin,
+    lineas: std::sync::mpsc::Receiver<Value>,
+    siguiente: i64,
+}
+
+impl SesionMcp {
+    /// `entrada` hace de CLAUDE_CODE_ENTRYPOINT: «cli» para una sesión interactiva, «sdk-cli» para un `claude -p`.
+    fn abrir(d: &Demonio, sesion: &str, entrada: &str) -> Self {
+        let mut hijo = d
+            .ev()
+            .arg("mcp")
+            .env("CLAUDE_CODE_SESSION_ID", sesion)
+            .env("CLAUDE_CODE_ENTRYPOINT", entrada)
+            .env_remove("EV_CAUSA")
+            .env_remove("EV_REGLA")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("ev mcp");
+        let entrada = hijo.stdin.take().expect("stdin");
+        let salida = BufReader::new(hijo.stdout.take().expect("stdout"));
+        let (tx, lineas) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            for l in salida.lines().map_while(Result::ok) {
+                if tx.send(serde_json::from_str::<Value>(&l).expect("JSON")).is_err() {
+                    break;
+                }
+            }
+        });
+        SesionMcp { hijo, entrada, lineas, siguiente: 1 }
+    }
+
+    /// Manda una petición y devuelve su respuesta; los avisos que lleguen mientras tanto van a `avisos`.
+    fn pedir(&mut self, metodo: &str, params: Value, avisos: &mut Vec<Value>) -> Value {
+        let id = self.siguiente;
+        self.siguiente += 1;
+        writeln!(self.entrada, "{}", json!({ "jsonrpc": "2.0", "id": id, "method": metodo, "params": params })).expect("escribir");
+        loop {
+            let m = self.lineas.recv_timeout(Duration::from_secs(15)).expect("respuesta de ev mcp");
+            if m["id"].as_i64() == Some(id) {
+                return m;
+            }
+            avisos.push(m);
+        }
+    }
+
+    fn llamar(&mut self, herramienta: &str, args: Value, avisos: &mut Vec<Value>) -> Value {
+        self.pedir("tools/call", json!({ "name": herramienta, "arguments": args }), avisos)["result"].clone()
+    }
+
+    /// Recoge avisos hasta tener `n` y luego un segundo y medio más, para ver si sobran.
+    fn avisos(&self, avisos: &mut Vec<Value>, n: usize) {
+        let fin = Instant::now() + Duration::from_secs(15);
+        while avisos.len() < n && Instant::now() < fin {
+            if let Ok(m) = self.lineas.recv_timeout(Duration::from_millis(200)) {
+                avisos.push(m);
+            }
+        }
+        while let Ok(m) = self.lineas.recv_timeout(Duration::from_millis(1500)) {
+            avisos.push(m);
+        }
+    }
+}
+
+impl Drop for SesionMcp {
+    fn drop(&mut self) {
+        let _ = self.hijo.kill();
+        let _ = self.hijo.wait();
+    }
+}
+
+fn texto_de(resultado: &Value) -> String {
+    resultado["content"][0]["text"].as_str().unwrap_or("").to_string()
+}
+
+#[test]
+fn una_sesion_se_suscribe_y_el_bus_le_avisa_por_el_canal_solo_de_lo_que_pidio() {
+    let d = Demonio::arrancar("suscribir", None);
+    let mut s = SesionMcp::abrir(&d, "sesion-propia", "cli");
+    let mut avisos = Vec::new();
+    // Según la documentación, la sesión interactiva pide la revisión 2026-07-28 (con `-p` la 2.1.314 pidió la
+    // 2025-11-25). Con la 2026-07-28 no registraría el canal, así que se contesta una anterior.
+    let inicio = s.pedir("initialize", json!({ "protocolVersion": "2026-07-28", "clientInfo": { "name": "claude-code" } }), &mut avisos);
+    assert_eq!(inicio["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(inicio["result"]["capabilities"]["experimental"]["claude/channel"], json!({}));
+    let lista = s.pedir("tools/list", json!({}), &mut avisos);
+    let nombres: Vec<&str> = lista["result"]["tools"].as_array().expect("tools").iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(nombres, ["publicar", "buscar", "esperar", "suscribir", "suscripciones", "desuscribir"]);
+
+    let sin_filtro = s.llamar("suscribir", json!({ "motivo": "todo", "tipo": "*" }), &mut avisos);
+    assert_eq!(sin_filtro["isError"], true, "suscribirse a todo no vale: {sin_filtro}");
+    let s1 = s.llamar("suscribir", json!({ "motivo": "fallos de prueba", "tipo": "prueba.*", "gravedad": "error" }), &mut avisos);
+    assert!(texto_de(&s1).starts_with("suscrita s1"), "{s1}");
+    let s2 = s.llamar("suscribir", json!({ "motivo": "otra sesión acaba", "tipo": "claude.Stop" }), &mut avisos);
+    assert!(texto_de(&s2).starts_with("suscrita s2"), "{s2}");
+
+    // Lo suyo no le avisa: ni lo que publica ella misma ni el Stop de su propia sesión. Los Stop entran por `ev hook`,
+    // con la forma que tienen de verdad (la sesión va en la correlación y en el cuerpo, no en los atributos).
+    let propio = s.llamar("publicar", json!({ "tipo": "prueba.mia", "gravedad": "error", "cuerpo": "lo publico yo" }), &mut avisos);
+    assert!(texto_de(&propio).starts_with("publicado: "), "{propio}");
+    por_el_hook(&d, br#"{"hook_event_name":"Stop","session_id":"sesion-propia"}"#, ("correlacion", "sesion-propia"));
+    por_el_hook(&d, br#"{"hook_event_name":"Stop","session_id":"otra-sesion"}"#, ("correlacion", "otra-sesion"));
+    let stop_ajeno = d.ver(&[("correlacion", "otra-sesion")])[0]["id"].clone();
+    let ids = d.publicar(json!([
+        { "fuente": "proc:x", "tipo": "prueba.fallo", "gravedad": "info", "cuerpo": "no es error" },
+        { "fuente": "proc:x", "tipo": "otra.cosa", "gravedad": "error", "cuerpo": "otro tipo" },
+        { "fuente": "proc:cargo test", "tipo": "prueba.fallo", "gravedad": "error", "cuerpo": "3 pruebas fallan" },
+    ]));
+    let ids: Vec<&str> = ids["ids"].as_array().expect("ids").iter().filter_map(|i| i.as_str()).collect();
+    s.avisos(&mut avisos, 2);
+
+    assert!(avisos.iter().all(|a| a["method"] == "notifications/claude/channel"), "{avisos:?}");
+    let de = |id: &str| avisos.iter().filter(|a| a["params"]["meta"]["suscripcion"] == id).collect::<Vec<_>>();
+    let (a1, a2) = (de("s1"), de("s2"));
+    assert_eq!((a1.len(), a2.len(), avisos.len()), (1, 1, 2), "un aviso por suscripción: {avisos:?}");
+    assert_eq!(a1[0]["params"]["meta"]["evento"], ids[2]);
+    assert_eq!(a1[0]["params"]["meta"]["motivo"], "fallos de prueba");
+    assert_eq!(a1[0]["params"]["meta"]["gravedad"], "error");
+    let contenido = a1[0]["params"]["content"].as_str().expect("contenido");
+    assert!(contenido.contains("prueba.fallo · proc:cargo test · error") && contenido.contains("3 pruebas fallan"), "{contenido}");
+    assert!(!contenido.contains("lo publico yo") && !contenido.contains("no es error"), "{contenido}");
+    assert_eq!(a2[0]["params"]["meta"]["evento"], stop_ajeno, "el Stop de la otra sesión, no el suyo");
+    assert_eq!(a2[0]["params"]["meta"]["eventos"], "1", "{:?}", a2[0]);
+    for a in &avisos {
+        for (k, v) in a["params"]["meta"].as_object().expect("meta") {
+            assert!(k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "Claude Code tira las claves que no son identificadores: {k}");
+            assert!(v.is_string(), "los valores de meta van como texto: {k}={v}");
+        }
+    }
+
+    let activas = texto_de(&s.llamar("suscripciones", json!({}), &mut avisos));
+    assert!(activas.contains("\"s1\"") && activas.contains("\"avisados\":1"), "{activas}");
+    let quitadas = texto_de(&s.llamar("desuscribir", json!({ "id": "todas" }), &mut avisos));
+    assert_eq!(quitadas, "quitada(s) 2; quedan 0");
+    d.publicar(json!({ "fuente": "proc:x", "tipo": "prueba.fallo", "gravedad": "error" }));
+    let antes = avisos.len();
+    s.avisos(&mut avisos, antes + 1);
+    assert_eq!(avisos.len(), antes, "sin suscripciones no llega nada: {:?}", &avisos[antes..]);
+
+    // Un `claude -p` (Quórum, La Fábrica) no recibe canales: ni se le ofrece el canal ni se puede suscribir.
+    let mut p = SesionMcp::abrir(&d, "sesion-p", "sdk-cli");
+    let inicio = p.pedir("initialize", json!({ "protocolVersion": "2025-11-25" }), &mut avisos);
+    assert!(inicio["result"]["capabilities"].get("experimental").is_none(), "{inicio}");
+    let lista = p.pedir("tools/list", json!({}), &mut avisos);
+    let nombres: Vec<&str> = lista["result"]["tools"].as_array().expect("tools").iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(nombres, ["publicar", "buscar", "esperar"]);
+    assert_eq!(p.llamar("suscribir", json!({ "motivo": "m", "tipo": "t" }), &mut avisos)["isError"], true);
+}
+
+#[test]
+fn una_suscripcion_hecha_con_el_bus_parado_avisa_de_lo_que_llega_al_arrancar() {
+    let dir = carpeta_temporal("suscribir-parado");
+    let puerto = puerto_libre();
+    let mut hijo = Command::new(EV)
+        .arg("mcp")
+        .env("EV_PUERTO", puerto.to_string())
+        .env("EV_DIR", &dir)
+        .env("CLAUDE_CODE_ENTRYPOINT", "cli")
+        .env_remove("EV_CAUSA")
+        .env_remove("EV_REGLA")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("ev mcp");
+    let mut entrada = hijo.stdin.take().expect("stdin");
+    let salida = BufReader::new(hijo.stdout.take().expect("stdout"));
+    let (tx, lineas) = std::sync::mpsc::channel::<Value>();
+    thread::spawn(move || {
+        for l in salida.lines().map_while(Result::ok) {
+            let _ = tx.send(serde_json::from_str(&l).expect("JSON"));
+        }
+    });
+    writeln!(entrada, "{}", json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "suscribir", "arguments": { "motivo": "al arrancar", "tipo": "prueba.cola" } } })).expect("escribir");
+    let r = lineas.recv_timeout(Duration::from_secs(15)).expect("respuesta");
+    assert!(texto_de(&r["result"]).contains("El bus no responde ahora"), "{r}");
+
+    // El evento espera en la cola del bus parado y entra al arrancar, después de la suscripción.
+    let mut e = eventos::evento::Evento::nuevo("prueba", "prueba.cola", json!("esperaba en la cola"));
+    e.t_evento = Some(eventos::evento::ahora());
+    std::fs::write(dir.join("pendientes.jsonl"), format!("{}\n", serde_json::to_string(&e).expect("JSON"))).expect("cola");
+    let mut cmd = Command::new(EV);
+    cmd.args(["servir", "--puerto", &puerto.to_string()]).env("EV_DIR", &dir).stdout(Stdio::null()).stderr(Stdio::null());
+    let mut bus = cmd.spawn().expect("ev servir");
+    let aviso = lineas.recv_timeout(Duration::from_secs(45));
+    let _ = bus.kill();
+    let _ = bus.wait();
+    let _ = hijo.kill();
+    let _ = hijo.wait();
+    let aviso = aviso.expect("el aviso tiene que llegar cuando el bus arranca");
+    assert_eq!(aviso["method"], "notifications/claude/channel");
+    assert!(aviso["params"]["content"].as_str().unwrap_or("").contains("esperaba en la cola"), "{aviso}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
