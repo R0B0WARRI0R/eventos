@@ -58,6 +58,44 @@ fn hecha_con_puertas_bien_queda_lista_e_interrumpida_queda_parada() {
 }
 
 #[test]
+fn una_tarea_de_quorum_sigue_sus_rondas_y_su_final() {
+    let c = "quorum:p:suma-a1b2";
+    let mut v = vec![ev(1, "a", "quorum.tarea.inicio", c, json!("Arregla la suma"), json!({"autor": "opus", "proyecto": "p", "tarea": "suma-a1b2"}))];
+    let t = &derivar(&v)[0];
+    assert_eq!((t.estado, t.origen.as_str()), (Estado::Trabajando, "quorum"));
+    assert!(t.titulo.contains("Quórum · p: Arregla la suma"), "{}", t.titulo);
+    v.push(ev(2, "b", "quorum.puerta", c, json!("1 prueba falla"), json!({"ronda": 1, "ok": false})));
+    assert_eq!(derivar(&v)[0].detalle, "ronda 1: puerta en rojo");
+    v.push(ev(3, "c", "quorum.puerta", c, json!("todo bien"), json!({"ronda": 2, "ok": true})));
+    assert_eq!(derivar(&v)[0].detalle, "ronda 2: puerta en verde");
+    // Sin `ok` no hay prueba de que pasara: cuenta como roja.
+    let sin_ok = derivar(&[ev(1, "a", "quorum.puerta", c, json!("?"), json!({"ronda": 1}))]);
+    assert_eq!(sin_ok[0].detalle, "ronda 1: puerta en rojo");
+    // El panel solo ve los tipos que pide al almacén.
+    for tipo in ["quorum.tarea.inicio", "quorum.puerta", "quorum.voto", "quorum.tarea.fin"] {
+        assert!(TIPOS.contains(&tipo), "falta {tipo} en TIPOS");
+    }
+    v.push(ev(4, "d", "quorum.voto", c, json!("RECHAZA: falta la prueba"), json!({"ronda": 2, "revisor": "pruebas", "voto": "RECHAZA"})));
+    let t = &derivar(&v)[0];
+    assert_eq!((t.estado, t.detalle.as_str()), (Estado::Trabajando, "ronda 2: pruebas RECHAZA"));
+    let fin = |estado: &str| {
+        let mut v = v.clone();
+        v.push(ev(5, "e", "quorum.tarea.fin", c, json!(format!("{estado}: detalle")), json!({"estado": estado, "rondas": 2})));
+        let t = derivar(&v).remove(0);
+        assert!(t.titulo.contains("Arregla la suma"), "el final no borra el título: {}", t.titulo);
+        t.estado
+    };
+    assert_eq!(fin("integrada"), Estado::ListoParaRevisar);
+    assert_eq!(fin("aprobada"), Estado::NecesitaEntrada);
+    assert_eq!(fin("rechazada"), Estado::Fallido);
+    assert_eq!(fin("error"), Estado::Fallido);
+    assert_eq!(fin("sin_cambios"), Estado::Parado);
+    // Sin el inicio (fuera de la ventana de horas), el título sale de la correlación.
+    let solo_fin = derivar(&[ev(1, "a", "quorum.tarea.fin", c, json!("integrada: abc"), json!({"estado": "integrada"}))]);
+    assert_eq!(solo_fin[0].titulo, "Quórum · p:suma-a1b2");
+}
+
+#[test]
 fn una_sesion_de_claude_code_sigue_sus_hooks() {
     let s = "sesion-1";
     let mut v = vec![

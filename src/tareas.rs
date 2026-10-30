@@ -1,6 +1,6 @@
 //! Una línea por tarea: el estado de cada cosa que se está haciendo, sacado de los eventos del bus. Lo usa el panel de
-//! tareas del visor. Una tarea es un grupo de eventos con la misma correlación: una tarea de La Fábrica, una sesión de
-//! Claude Code, una orden lanzada con `ev run` o un agente que despertó una regla.
+//! tareas del visor. Una tarea es un grupo de eventos con la misma correlación: una tarea de La Fábrica o de quórum, una
+//! sesión de Claude Code, una orden lanzada con `ev run` o un agente que despertó una regla.
 
 use crate::evento::{formatear, Evento};
 use crate::texto::{recortar, redactar};
@@ -14,6 +14,10 @@ pub const TIPOS: &[&str] = &[
     "fabrica.tarea.inicio",
     "fabrica.tarea.fin",
     "fabrica.puerta.fallo",
+    "quorum.tarea.inicio",
+    "quorum.puerta",
+    "quorum.voto",
+    "quorum.tarea.fin",
     "claude.SessionStart",
     "claude.UserPromptSubmit",
     "claude.Notification",
@@ -56,7 +60,7 @@ impl Estado {
 pub struct Tarea {
     /// La correlación que agrupa sus eventos.
     pub clave: String,
-    /// De dónde sale: `fabrica`, `claude`, `proceso` o `agente`.
+    /// De dónde sale: `fabrica`, `quorum`, `claude`, `proceso` o `agente`.
     pub origen: String,
     pub titulo: String,
     pub estado: Estado,
@@ -135,6 +139,33 @@ fn cambio(e: &Evento) -> Option<Cambio> {
         }
         // No cambia el estado (ya lo hizo su final), pero la nota del agente se engancha a la tarea por él.
         "fabrica.puerta.fallo" => ("fabrica", None, None),
+        "quorum.tarea.inicio" => {
+            let proyecto = texto(a, "proyecto").unwrap_or_default();
+            let autor = texto(a, "autor").unwrap_or_default();
+            let titulo = format!("Quórum · {proyecto}: {}", recortar(&e.cuerpo_texto(), 120));
+            ("quorum", Some(titulo), Some((Trabajando, format!("en curso; autor {autor}"))))
+        }
+        // Las puertas y los votos cuentan cómo va la ronda; el estado lo decide el final.
+        "quorum.puerta" | "quorum.voto" => {
+            let ronda = a.get("ronda").and_then(Value::as_u64).unwrap_or(0);
+            let que = if e.tipo == "quorum.puerta" {
+                let color = if a.get("ok") == Some(&Value::Bool(true)) { "en verde" } else { "en rojo" };
+                format!("puerta {color}")
+            } else {
+                format!("{} {}", texto(a, "revisor").unwrap_or_default(), texto(a, "voto").unwrap_or_default())
+            };
+            ("quorum", None, Some((Trabajando, format!("ronda {ronda}: {que}"))))
+        }
+        "quorum.tarea.fin" => {
+            let estado = match texto(a, "estado").as_deref() {
+                Some("integrada") => ListoParaRevisar,
+                // Aprobada sin integrar: falta que alguien la integre a mano.
+                Some("aprobada") => NecesitaEntrada,
+                Some("sin_cambios") => Parado,
+                _ => Fallido,
+            };
+            ("quorum", None, Some((estado, cuerpo())))
+        }
         "claude.SessionStart" | "claude.UserPromptSubmit" | "claude.Notification" | "claude.Stop" | "claude.SessionEnd" => {
             // Con el principio de la sesión, para distinguir dos sesiones abiertas en la misma carpeta.
             let sesion: String = e.correlacion.as_deref().unwrap_or("").chars().take(6).collect();
@@ -177,6 +208,7 @@ fn cambio(e: &Evento) -> Option<Cambio> {
 fn titulo_por_defecto(origen: &str, clave: &str) -> String {
     match origen {
         "fabrica" => format!("La Fábrica · {}", clave.trim_start_matches("fabrica:")),
+        "quorum" => format!("Quórum · {}", clave.trim_start_matches("quorum:")),
         "claude" => format!("Claude Code · sesión {}", clave.chars().take(8).collect::<String>()),
         "proceso" => format!("Orden · {clave}"),
         _ => format!("Agente · {clave}"),

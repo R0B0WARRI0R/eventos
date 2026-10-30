@@ -12,7 +12,7 @@ Se abre con el acceso **Bus de eventos** del escritorio (`D:\Programas\BusEvento
 - **Al cerrar:** lo para, pero solo si lo arrancó ella. El título de la ventana dice cuál de los dos casos es.
 - **Tareas (desde 2026-10-29):** arriba a la izquierda, una línea por tarea con su estado escrito.
   - Los estados son trabajando, necesita entrada, listo para revisar, fallido y parado. Primero sale lo que pide atención.
-  - Las tareas salen de La Fábrica, de las sesiones de Claude Code, de `ev run` y de los agentes. La nota del agente de diagnóstico va debajo de la tarea fallida.
+  - Las tareas salen de La Fábrica, de quórum, de las sesiones de Claude Code, de `ev run` y de los agentes. La nota del agente de diagnóstico va debajo de la tarea fallida.
   - Pulsar una línea abre su último evento. Los cambios a «necesita entrada» o «fallido» se anuncian al lector de pantalla, todos juntos en un solo aviso y lo más urgente primero. Al refrescarse, el foco se queda en la misma línea.
   - Dentro de un mismo estado, primero lo que llegó después.
   - Al reintentar una tarea, su nota anterior desaparece, y una nota que llegue después del reintento ya no se pega.
@@ -68,6 +68,17 @@ La Fábrica publica tres tipos de evento, todos con la correlación `fabrica:<pr
 - `fabrica.puerta.fallo`: uno por cada puerta que falló en la última pasada (cuerpo: el final de su salida).
 
 Si el bus no responde, esperan en `datos\pendientes.jsonl` sin la salida de las puertas. El puente está en `D:\dev\Fabrica\src-tauri\src\bus.rs`. La regla `diagnosticar-puerta-fabrica` despierta con cada fallo a un agente de lectura que publica una `nota.reanudacion`: qué falla, por qué, qué cambió y la siguiente orden. Comprobado el 2026-10-29 con Claude real: 24 s y sin tocar ningún fichero.
+
+## Quórum (desde 2026-10-29)
+
+Quórum (`D:\dev\quorum`) publica cuatro tipos de evento, todos con la correlación `quorum:<proyecto>:<tarea>`:
+
+- `quorum.tarea.inicio`: la tarea empieza (cuerpo: la tarea; `atributos.autor`: el modelo del autor).
+- `quorum.puerta`: el resultado de las pruebas en una ronda (`atributos.ronda` y `atributos.ok`; cuerpo: el final de su salida).
+- `quorum.voto`: el voto de un revisor (`atributos.revisor`, `atributos.modelo` y `atributos.voto`: APRUEBA, RECHAZA o ABSTENCIÓN).
+- `quorum.tarea.fin`: el final (`atributos.estado`: `integrada`, `aprobada` cuando no se pudo integrar, `rechazada`, `sin_cambios` o `error`).
+
+En el panel de tareas, integrada queda lista para revisar; aprobada sin integrar, a la espera de que alguien la integre a mano; rechazada o con error, fallida; sin cambios, parada. Si el bus no responde, esperan en `datos\pendientes.jsonl` solo con sus metadatos y la tarea: sin la salida de la puerta, las objeciones ni el detalle del final, que pueden traer texto del repositorio.
 
 ## Reglas
 
@@ -149,10 +160,10 @@ Cada una cubre algo que la biblioteca estándar no trae:
 cargo test --jobs 2
 ```
 
-Son 45:
+Son 46:
 
 - 25 contra el servicio de verdad, en un puerto libre y con su propia carpeta. Once de ellas salen de las dos revisiones independientes, una por cada objeción. Otras cuatro son del 2026-10-29: la comprobación de herramientas, las dos de qué guarda el hook (lo que no guarda y lo que sí) y la de `/tareas`.
-- 20 de piezas sueltas; doce de ellas, del estado de las tareas.
+- 21 de piezas sueltas; trece de ellas, del estado de las tareas (una, de las de quórum).
 
 El arnés de Claude se prueba con un `claude` falso (un `.cmd`) que guarda sus argumentos y su entrada.
 
