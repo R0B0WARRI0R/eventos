@@ -89,6 +89,7 @@ fn enviar_en_lotes(rx: Receiver<Evento>) {
 #[cfg(windows)]
 mod win {
     use super::{enviar_en_lotes, Opciones, BARRIDO};
+    use crate::carpetas::Carpetas;
     use crate::enganches::{caida_desde_xml, cargar, orden_de_aviso, Aviso, Limitador, Vigia, CONSULTA_CAIDAS};
     use crate::evento::Evento;
     use crate::{puerto, Resultado};
@@ -331,8 +332,12 @@ mod win {
             propio: unsafe { GetCurrentProcessId() },
             aviso: config.aviso.clone(),
         };
+        // Carpetas vigiladas: `notify` mira en sus hilos y el bucle de abajo recoge los ficheros nuevos.
+        let mut carpetas = Carpetas::new(&config)?;
         let inicio = Instant::now();
         let tanteos = e.vigia.tanteos();
+        e.publicar(tanteos, inicio);
+        let tanteos = carpetas.tanteos();
         e.publicar(tanteos, inicio);
 
         // Caídas: suscripción al registro Application. El contexto (el emisor) vive mientras viva la suscripción.
@@ -370,7 +375,7 @@ mod win {
             eprintln!("ev enganchar: Windows no aceptó los avisos de ventanas; las apps se verán cada {} s", BARRIDO.as_secs());
         }
 
-        let nombres: Vec<&str> = config.apps.iter().map(|a| a.nombre.as_str()).collect();
+        let nombres: Vec<&str> = config.apps.iter().map(|a| a.nombre.as_str()).chain(carpetas.rutas()).collect();
         eprintln!("ev enganchar: vigilo {} (bus en el puerto {})", nombres.join(", "), puerto());
         e.barrer(true, inicio);
         let mut proximo_barrido = inicio + BARRIDO;
@@ -405,6 +410,10 @@ mod win {
             }
             let titulos = e.vigia.tick(ahora);
             e.publicar(titulos, ahora);
+            if !carpetas.is_empty() {
+                let ficheros = carpetas.recoger(ahora);
+                e.publicar(ficheros, ahora);
+            }
             if fin.is_some_and(|f| ahora >= f) {
                 break;
             }

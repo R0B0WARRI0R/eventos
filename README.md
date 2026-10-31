@@ -134,6 +134,26 @@ Las reglas `diagnosticar-quorum-rechazada` y `diagnosticar-quorum-error` (desde 
 
 La sección `[aviso]` de `enganches.toml` lanza una orden con cada evento de los tipos que elija, sin consola y sin esperarla. Hoy, con `app.sin_respuesta` y `app.caida`, lanza la ventanita de avisos de XANA (`D:\Ari\avisos`). En la orden, `{cuerpo}`, `{app}` y `{tipo}` se sustituyen por los datos del evento. Cada uno va como argumento aparte, sin pasar por ninguna consola.
 
+### Carpetas vigiladas
+
+Cada `[[carpeta]]` de `enganches.toml` hace que `ev enganchar` publique un `carpeta.fichero` (gravedad `info`, fuente `carpeta:<ruta>`) cuando aparece un fichero nuevo en ella. Nada se vigila si no está en el fichero.
+
+```toml
+[[carpeta]]
+ruta = 'D:\algo\Descargas'      # obligatoria; tiene que existir y ser una carpeta
+recursiva = false               # por defecto false: las subcarpetas no cuentan
+ignorar = ["*.tmp", "*.crdownload", "*.part", "~$*"]   # por defecto, estos cuatro
+antirrebote_ms = 2000           # por defecto 2000
+por_hora = 120                  # por defecto 120, como las apps
+```
+
+- El cuerpo lleva la ruta relativa a la carpeta y el tamaño (`informe.pdf (3000 bytes)`). Los atributos son `carpeta`, `relativa`, `nombre` y `bytes`. Nunca se lee el contenido del fichero.
+- Un fichero se publica una sola vez, cuando lleva `antirrebote_ms` sin cambiar de tamaño. Un programa que escribe en varios pasos da un solo evento. Una descarga que se crea como `.crdownload` y se renombra a `.pdf` da uno, con el nombre final.
+- `ignorar` mira el nombre del fichero, con `*` y `?` y sin distinguir mayúsculas. Si se pone, sustituye a los cuatro de por defecto. Los directorios no son ficheros y no se publican.
+- Los eventos pasan por los mismos topes que los de las apps: `por_segundo_global` y el `por_hora` de cada carpeta.
+- Al arrancar se publica un `enganche.tanteo` por carpeta (fuente `enganche:carpeta:<ruta>`).
+- `ev enganchar` no arranca si una ruta está vacía, no existe, no es una carpeta o está repetida, y dice cuál.
+
 No inyecta nada en las apps ni necesita administrador. Hoy vigila Constructo, Obsidian y Brave. Diseño completo y fases siguientes en `docs/2026-10-30-diseno-enganches.md`. Las pruebas de escritorio se lanzan con `cargo test --test enganches -- --ignored --test-threads=1`.
 
 ## Reglas
@@ -208,6 +228,7 @@ Cada una cubre algo que la biblioteca estándar no trae:
 - `toml` (reglas).
 - `ulid` (ids ordenables).
 - `regex` (redacción).
+- `notify` (carpetas vigiladas de los enganches).
 - `windows-sys` (decodificar la página OEM, cp850).
 
 ## Pruebas
@@ -216,7 +237,7 @@ Cada una cubre algo que la biblioteca estándar no trae:
 cargo test --jobs 2
 ```
 
-Son 56, más las de los enganches (`tests/enganches.rs`: 15, y 3 de escritorio que van aparte):
+Son 56, más las de los enganches (`tests/enganches.rs`: 24, nueve de ellas de las carpetas vigiladas, con carpetas temporales de verdad; y 3 de escritorio que van aparte):
 
 - **28 contra el servicio de verdad**, en un puerto libre y con su propia carpeta.
   - Una es del 2026-10-31, la de quién está conectado. Una sesión y un `-p` laten y se cuentan como sesión y como agente. El `-p` muerto sale de la lista al dejar de latir, y no antes. La sesión que cierra su entrada se despide y sale en el acto. Un latido que no vale se rechaza. Si se quita la despedida, la prueba falla (mutación comprobada).
