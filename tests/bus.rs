@@ -1063,3 +1063,74 @@ fn una_carpeta_relativa_se_vuelve_absoluta() {
     let _ = std::fs::remove_dir_all(&base);
     assert!(Path::new(&carpeta).is_absolute() && carpeta.ends_with("datos-rel"), "{carpeta}");
 }
+
+/// Lanza `ev` con estos argumentos contra el demonio y devuelve (líneas de stdout, stderr).
+fn ev_salida(d: &Demonio, args: &[&str]) -> (Vec<String>, String) {
+    let s = d.ev().args(args).output().expect("lanzar ev");
+    assert!(s.status.success(), "ev {args:?}: {}", String::from_utf8_lossy(&s.stderr));
+    let lineas = String::from_utf8_lossy(&s.stdout).lines().map(str::to_string).collect();
+    (lineas, String::from_utf8_lossy(&s.stderr).into_owned())
+}
+
+#[test]
+fn ver_y_buscar_avisan_por_stderr_al_llegar_al_tope_y_despues_pagina() {
+    let d = Demonio::arrancar("tope", None);
+    for lote in 0..11 {
+        let eventos: Vec<Value> = (1..=100)
+            .map(|i| lote * 100 + i)
+            .filter(|n| *n <= 1010)
+            .map(|n| json!({ "fuente": "prueba", "tipo": "lote", "cuerpo": format!("marca n{n:04}") }))
+            .collect();
+        d.publicar(Value::Array(eventos));
+    }
+    let todos = d.ver(&[("tipo", "lote"), ("despues", "0"), ("limite", "1000")]);
+    assert_eq!(todos.len(), 1000);
+    let seq_1000 = todos[999]["seq"].as_i64().expect("seq").to_string();
+
+    // Pide 5000 y hay 1010: da los últimos 1000 y lo dice por stderr, en una línea.
+    let (lineas, aviso) = ev_salida(&d, &["ver", "--tipo", "lote", "--limite", "5000"]);
+    assert_eq!(lineas.len(), 1000);
+    assert!(lineas[0].ends_with("marca n0011") && lineas[999].ends_with("marca n1010"), "{}", lineas[0]);
+    assert_eq!(aviso.lines().count(), 1, "{aviso}");
+    assert!(aviso.contains("puede haber más") && aviso.contains("--despues 0"), "{aviso}");
+
+    // Sin --limite el tope es 100, y también avisa.
+    let (lineas, aviso) = ev_salida(&d, &["ver", "--tipo", "lote"]);
+    assert_eq!(lineas.len(), 100);
+    assert!(aviso.contains("puede haber más"), "{aviso}");
+
+    // Paginando con --despues: la primera página dice con qué seq seguir…
+    let (lineas, aviso) = ev_salida(&d, &["ver", "--tipo", "lote", "--despues", "0", "--limite", "5000"]);
+    assert_eq!(lineas.len(), 1000);
+    assert!(lineas[0].ends_with("marca n0001") && lineas[999].ends_with("marca n1000"), "{}", lineas[0]);
+    assert_eq!(aviso.lines().count(), 1, "{aviso}");
+    assert!(aviso.trim_end().ends_with(&format!("--despues {seq_1000}")), "{aviso}");
+
+    // …y la siguiente trae solo lo posterior a ese seq; por debajo del tope, sin aviso.
+    let (lineas, aviso) = ev_salida(&d, &["ver", "--tipo", "lote", "--despues", &seq_1000, "--limite", "5000"]);
+    let esperadas: Vec<String> = (1001..=1010).map(|n| format!("marca n{n}")).collect();
+    assert_eq!(lineas.len(), 10, "{lineas:?}");
+    assert!(lineas.iter().zip(&esperadas).all(|(l, e)| l.ends_with(e.as_str())), "{lineas:?}");
+    assert!(aviso.is_empty(), "{aviso}");
+
+    // Un --limite pequeño es el tope: con 5 avisa y dice el seq del quinto; con 11 ya no.
+    let quinto = d.ver(&[("tipo", "lote"), ("despues", &seq_1000), ("limite", "5")])[4]["seq"].as_i64().expect("seq");
+    let (lineas, aviso) = ev_salida(&d, &["ver", "--tipo", "lote", "--limite", "5", "--despues", &seq_1000]);
+    assert_eq!(lineas.len(), 5);
+    assert!(aviso.trim_end().ends_with(&format!("--despues {quinto}")), "{aviso}");
+    let (lineas, aviso) = ev_salida(&d, &["ver", "--tipo", "lote", "--limite", "11", "--despues", &seq_1000]);
+    assert_eq!(lineas.len(), 10);
+    assert!(aviso.is_empty(), "{aviso}");
+    let (lineas, aviso) = ev_salida(&d, &["buscar", "n1005"]);
+    assert_eq!(lineas.len(), 1);
+    assert!(aviso.is_empty(), "{aviso}");
+
+    // buscar también avisa al llegar a su tope, y pagina igual.
+    let (lineas, aviso) = ev_salida(&d, &["buscar", "marca", "--limite", "3"]);
+    assert_eq!(lineas.len(), 3);
+    assert!(aviso.contains("puede haber más") && aviso.contains("--despues 0"), "{aviso}");
+    let (lineas, aviso) = ev_salida(&d, &["buscar", "marca", "--despues", &seq_1000, "--limite", "20"]);
+    assert_eq!(lineas.len(), 10);
+    assert!(lineas[0].ends_with("marca n1001"), "{lineas:?}");
+    assert!(aviso.is_empty(), "{aviso}");
+}
