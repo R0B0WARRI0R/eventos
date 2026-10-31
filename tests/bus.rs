@@ -83,7 +83,8 @@ impl Demonio {
 
     fn ev(&self) -> Command {
         let mut c = Command::new(EV);
-        c.env("EV_PUERTO", self.puerto.to_string()).env("EV_DIR", &self.dir);
+        // Sin las carpetas ignoradas de quien lanza las pruebas: las que hagan falta las pone cada prueba.
+        c.env("EV_PUERTO", self.puerto.to_string()).env("EV_DIR", &self.dir).env_remove("EV_HOOK_IGNORAR");
         c
     }
 }
@@ -589,6 +590,100 @@ fn el_hook_no_guarda_texto_herramientas_ni_campos_nuevos() {
     // Lo que no es un objeto JSON no deja nada de su contenido.
     let c = por_el_hook(&d, br#""texto privado-8""#, ("tipo", "claude.hook"));
     assert_eq!(c, json!({ "omitidos": ["(la entrada no es un objeto JSON)"] }));
+}
+
+/// Pasa por `ev hook` un `SessionStart` de esta sesión en esta carpeta, con este entorno añadido. Sea cual sea la
+/// carpeta, el hook no frena a Claude Code: termina con 0 y no escribe nada, ni en la salida ni en la de errores.
+fn sesion_por_el_hook(d: &Demonio, entorno: &[(&str, &str)], sesion: &str, cwd: &str) {
+    let mut orden = d.ev();
+    orden.arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    for (k, v) in entorno {
+        orden.env(k, v);
+    }
+    let mut hook = orden.spawn().expect("ev hook");
+    let carga = json!({ "hook_event_name": "SessionStart", "session_id": sesion, "cwd": cwd, "source": "startup" });
+    hook.stdin.take().expect("stdin").write_all(carga.to_string().as_bytes()).expect("escribir");
+    let salida = hook.wait_with_output().expect("fin");
+    assert_eq!(salida.status.code(), Some(0), "{sesion}");
+    assert!(salida.stdout.is_empty(), "Claude Code interpreta la salida de un hook ({sesion})");
+    assert!(salida.stderr.is_empty(), "{sesion}: {}", String::from_utf8_lossy(&salida.stderr));
+}
+
+/// Las sesiones que llegaron al bus por el hook, ordenadas, tras esperar a las `n` que tienen que llegar. Comprueba
+/// también que no queda nada en la cola en disco: lo descartado no se publica ni más tarde.
+fn sesiones_del_hook(d: &Demonio, n: usize) -> Vec<String> {
+    let mut v: Vec<String> = d
+        .ver_al_menos(&[("fuente", "hook:claude/")], n)
+        .iter()
+        .filter_map(|e| e["correlacion"].as_str().map(str::to_string))
+        .collect();
+    v.sort();
+    assert!(!d.dir.join("pendientes.jsonl").exists(), "no debe quedar nada esperando en la cola");
+    v
+}
+
+/// Una carpeta temporal del sistema de mentira para el hook (no hace falta que exista: solo se comparan rutas).
+fn temporal_de_prueba(d: &Demonio) -> String {
+    d.dir.join("Temp").display().to_string()
+}
+
+#[test]
+fn el_hook_no_publica_las_sesiones_de_una_carpeta_ignorada() {
+    // Constructo abre sus `claude -p` internas en `%TEMP%\lector-ia-skills\sesion-<pid>-<azar>`: el 2026-10-31 eran
+    // 216 de los 226 SessionStart del día. Esa carpeta se ignora sin configurar nada.
+    let d = Demonio::arrancar("hook-ignorar", None);
+    let temp = temporal_de_prueba(&d);
+    let entorno = [("TEMP", temp.as_str()), ("TMP", temp.as_str())];
+    sesion_por_el_hook(&d, &entorno, "ign-1", &format!(r"{temp}\lector-ia-skills\sesion-38680-z8evwv"));
+    sesion_por_el_hook(&d, &entorno, "ign-2", &format!(r"{temp}\lector-ia-skills"));
+    sesion_por_el_hook(&d, &entorno, "nor-1", r"D:\proyecto");
+    sesion_por_el_hook(&d, &entorno, "nor-2", &temp);
+    assert_eq!(sesiones_del_hook(&d, 2), ["nor-1", "nor-2"]);
+}
+
+#[test]
+fn el_hook_compara_las_carpetas_por_componentes() {
+    let d = Demonio::arrancar("hook-componentes", None);
+    let temp = temporal_de_prueba(&d);
+    let entorno = [("TEMP", temp.as_str()), ("TMP", temp.as_str())];
+    // Un nombre que empieza igual no es la misma carpeta, ni lo es otra con el mismo nombre en otro sitio.
+    sesion_por_el_hook(&d, &entorno, "pre-1", &format!(r"{temp}\lector-ia-skills2\sesion-1"));
+    sesion_por_el_hook(&d, &entorno, "pre-2", &format!(r"{temp}\lector-ia-skills.viejo"));
+    sesion_por_el_hook(&d, &entorno, "otra-1", r"D:\otra\lector-ia-skills\sesion-1");
+    // En Windows da igual la caja y da igual `/` que `\`, también repetidos o al final.
+    sesion_por_el_hook(&d, &entorno, "may-1", &format!(r"{}\LECTOR-IA-SKILLS\Sesion-1", temp.to_uppercase()));
+    sesion_por_el_hook(&d, &entorno, "bar-1", &format!("{}/lector-ia-skills/sesion-1", temp.replace('\\', "/")));
+    sesion_por_el_hook(&d, &entorno, "mix-1", &format!(r"{temp}\\lector-ia-skills/sesion-1\"));
+    // Y lo mismo si la que llega escrita de otra forma es la carpeta temporal.
+    let rara = format!("{}/", temp.to_lowercase().replace('\\', "/"));
+    let entorno_raro = [("TEMP", rara.as_str()), ("TMP", rara.as_str())];
+    sesion_por_el_hook(&d, &entorno_raro, "tmp-1", &format!(r"{temp}\lector-ia-skills\sesion-1"));
+    assert_eq!(sesiones_del_hook(&d, 3), ["otra-1", "pre-1", "pre-2"]);
+}
+
+#[test]
+fn ev_hook_ignorar_suma_carpetas_y_puede_quitar_la_de_defecto() {
+    let d = Demonio::arrancar("hook-variable", None);
+    let temp = temporal_de_prueba(&d);
+    let constructo = format!(r"{temp}\lector-ia-skills\sesion-1");
+    let pasar = |variable: &str, sesion: &str, cwd: &str| {
+        let entorno = [("TEMP", temp.as_str()), ("TMP", temp.as_str()), ("EV_HOOK_IGNORAR", variable)];
+        sesion_por_el_hook(&d, &entorno, sesion, cwd);
+    };
+    // Se suman a la de por defecto; separadas por `;`, con espacios, comillas o huecos vacíos entre medias.
+    let dos = r#"D:\Apps\Una; "E:/Otra App/datos" ;;"#;
+    pasar(dos, "var-1", r"d:\apps\una\sesion-1");
+    pasar(dos, "var-2", r"E:\Otra App\datos\x");
+    pasar(dos, "var-3", &constructo);
+    pasar(dos, "var-4", r"D:\Apps\Unas\x");
+    pasar(dos, "var-5", r"D:\proyecto");
+    // `-` quita la de por defecto, sola o junto a otras.
+    pasar("-", "menos-1", &constructo);
+    pasar(r"-;D:\Apps\Una", "menos-2", &constructo);
+    pasar(r"-;D:\Apps\Una", "menos-3", r"D:\Apps\Una\x");
+    // Una entrada sin componentes (solo separadores) no ignora todo.
+    pasar(r"\;/", "raiz-1", r"D:\proyecto");
+    assert_eq!(sesiones_del_hook(&d, 5), ["menos-1", "menos-2", "raiz-1", "var-4", "var-5"]);
 }
 
 #[test]
