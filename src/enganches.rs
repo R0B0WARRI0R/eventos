@@ -43,6 +43,38 @@ pub struct Config {
     /// Aviso en pantalla para algunos tipos (desde 2026-10-31: la ventanita de avisos de XANA).
     #[serde(default)]
     pub aviso: Option<Aviso>,
+    /// Carpetas vigiladas (Grupo 2c): un `carpeta.fichero` por cada fichero nuevo. Las vigila `carpetas.rs`.
+    #[serde(default, rename = "carpeta")]
+    pub carpetas: Vec<Carpeta>,
+}
+
+/// Una carpeta vigilada: cada fichero nuevo da un `carpeta.fichero` cuando lleva `antirrebote_ms` sin cambiar de
+/// tamaño. Nunca se lee su contenido.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Carpeta {
+    /// Tiene que existir y ser una carpeta. Va tal cual en la fuente (`carpeta:<ruta>`).
+    pub ruta: String,
+    /// Mirar también las subcarpetas.
+    #[serde(default)]
+    pub recursiva: bool,
+    /// Nombres de fichero que no se publican, con `*` y `?`, sin distinguir mayúsculas.
+    #[serde(default = "ignorar_por_defecto")]
+    pub ignorar: Vec<String>,
+    #[serde(default = "dos_mil")]
+    pub antirrebote_ms: u64,
+    #[serde(default = "ciento_veinte")]
+    pub por_hora: usize,
+}
+
+/// Lo que dejan a medias los navegadores y Office mientras escriben.
+pub const IGNORAR_POR_DEFECTO: &[&str] = &["*.tmp", "*.crdownload", "*.part", "~$*"];
+
+fn ignorar_por_defecto() -> Vec<String> {
+    IGNORAR_POR_DEFECTO.iter().map(|p| p.to_string()).collect()
+}
+fn dos_mil() -> u64 {
+    2000
 }
 
 /// Una orden que se lanza, sin consola y sin esperarla, con cada evento de estos tipos que sale de verdad (pasados los
@@ -152,6 +184,34 @@ pub fn validar(c: &Config) -> Resultado<()> {
         }
         if let Some(malo) = a.tipos.iter().find(|t| !TIPOS_FASE_1.contains(&t.as_str())) {
             return Err(format!("aviso: tipo desconocido «{malo}» ({})", TIPOS_FASE_1.join(", ")).into());
+        }
+    }
+    validar_carpetas(&c.carpetas)
+}
+
+fn validar_carpetas(carpetas: &[Carpeta]) -> Resultado<()> {
+    // La ruta de verdad de cada carpeta y cómo la escribieron, para decir con cuál choca una repetida.
+    let mut vistas: HashMap<String, &str> = HashMap::new();
+    for k in carpetas {
+        if k.ruta.trim().is_empty() {
+            return Err("carpeta con la ruta vacía".into());
+        }
+        let ruta = Path::new(&k.ruta);
+        match std::fs::metadata(ruta) {
+            Err(e) => return Err(format!("carpeta «{}»: no existe o no puedo verla ({e})", k.ruta).into()),
+            Ok(m) if !m.is_dir() => return Err(format!("carpeta «{}»: no es una carpeta", k.ruta).into()),
+            Ok(_) => {}
+        }
+        let real = std::fs::canonicalize(ruta).unwrap_or_else(|_| crate::absoluta(ruta.to_path_buf()));
+        let mut clave = real.to_string_lossy().into_owned();
+        if cfg!(windows) {
+            clave = clave.to_lowercase();
+        }
+        if let Some(otra) = vistas.insert(clave, &k.ruta) {
+            return Err(format!("carpeta «{}»: repetida, es la misma que «{otra}»", k.ruta).into());
+        }
+        if k.por_hora == 0 {
+            return Err(format!("carpeta «{}»: por_hora tiene que ser al menos 1", k.ruta).into());
         }
     }
     Ok(())
@@ -550,10 +610,12 @@ pub struct Limitador {
 
 impl Limitador {
     pub fn new(c: &Config) -> Self {
+        let cupo = |por_hora| Cupo { por_hora, marcas: VecDeque::new(), callados: 0, avisado: false };
         let cupos = c
             .apps
             .iter()
-            .map(|a| (format!("app:{}", a.slug), Cupo { por_hora: a.por_hora, marcas: VecDeque::new(), callados: 0, avisado: false }))
+            .map(|a| (format!("app:{}", a.slug), cupo(a.por_hora)))
+            .chain(c.carpetas.iter().map(|k| (format!("carpeta:{}", k.ruta), cupo(k.por_hora))))
             .collect();
         Limitador {
             por_segundo: c.por_segundo_global,

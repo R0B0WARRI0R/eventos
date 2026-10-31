@@ -150,6 +150,8 @@ Tipo: **`notificacion.windows`**, fuente `notif:<slug>`, gravedad `info`, **`con
 
 Tipo: **`carpeta.fichero`**, fuente `carpeta:<ruta>`, gravedad `info`. Cuerpo = ruta relativa y tamaño; **no** se lee el contenido del fichero (eso sería otra fuente, explícita).
 
+**Hecho (2026-10-31):** `src/carpetas.rs`, con `[[carpeta]]` en `enganches.toml` (`ruta`, `recursiva`, `ignorar`, `antirrebote_ms`, `por_hora`). El tamaño se mira en cada vuelta del bucle y no solo cuando avisa `notify`, porque Windows no siempre avisa mientras un programa escribe. Se publica cuando lleva `antirrebote_ms` (2000 por defecto) sin cambiar.
+
 ---
 
 ## 5. Grupo 3 — texto de ventana por UI Automation (solo esbozo)

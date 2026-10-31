@@ -306,6 +306,259 @@ fn el_tope_global_por_segundo_frena_una_avalancha() {
     assert_eq!(l.admitir(de("app:a", "app.titulo", "luego", "info"), t0 + Duration::from_secs(1)).len(), 1);
 }
 
+// --- Carpetas vigiladas (Grupo 2c) ---
+
+mod carpetas {
+    use super::{config, tipos};
+    use eventos::carpetas::{ignorado, Carpetas};
+    use eventos::enganches::{validar, Config, Limitador, IGNORAR_POR_DEFECTO};
+    use eventos::evento::Evento;
+    use serde_json::{json, Value};
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    /// Corto para que las pruebas no se eternicen, y holgado frente a las pausas entre pasos de escritura.
+    const ANTIRREBOTE_MS: u64 = 700;
+    const PLAZO: Duration = Duration::from_secs(20);
+
+    fn carpeta_temporal(nombre: &str) -> PathBuf {
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("reloj").as_nanos();
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("ev-carpeta-{nombre}-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("carpeta de prueba");
+        dir
+    }
+
+    fn toml_de(dir: &Path, extra: &str) -> String {
+        format!("[[carpeta]]\nruta = '{}'\nantirrebote_ms = {ANTIRREBOTE_MS}\n{extra}\n", dir.display())
+    }
+
+    fn vigilar(dir: &Path, extra: &str) -> Carpetas {
+        Carpetas::new(&config(&toml_de(dir, extra))).expect("vigilar la carpeta")
+    }
+
+    /// Recoge hasta que se cumple la condición o vence el plazo (y entonces falla con lo que llegó).
+    fn esperar(c: &mut Carpetas, llegados: &mut Vec<Evento>, hasta: impl Fn(&[Evento]) -> bool) {
+        let fin = Instant::now() + PLAZO;
+        loop {
+            llegados.extend(c.recoger(Instant::now()));
+            if hasta(llegados.as_slice()) {
+                return;
+            }
+            assert!(Instant::now() < fin, "no llegó lo esperado en {PLAZO:?}; llegó: {llegados:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn nombre(e: &Evento) -> &str {
+        e.atributo("nombre").and_then(Value::as_str).unwrap_or_default()
+    }
+
+    fn con_nombre(n: &'static str) -> impl Fn(&[Evento]) -> bool {
+        move |v: &[Evento]| v.iter().any(|e| nombre(e) == n)
+    }
+
+    /// Los nombres publicados, ordenados.
+    fn nombres(v: &[Evento]) -> Vec<&str> {
+        let mut n: Vec<&str> = v.iter().map(nombre).collect();
+        n.sort_unstable();
+        n
+    }
+
+    /// Un fichero testigo, creado después de lo que se prueba. Cuando llega su evento, lo de antes ya ha tenido su
+    /// antirrebote entero: si tuviera que salir algo más, ya habría salido.
+    fn testigo(c: &mut Carpetas, dir: &Path, llegados: &mut Vec<Evento>) {
+        std::fs::write(dir.join("testigo.txt"), "t").expect("testigo");
+        esperar(c, llegados, con_nombre("testigo.txt"));
+    }
+
+    #[test]
+    fn la_configuracion_de_carpetas_trae_sus_valores_por_defecto() {
+        let dir = carpeta_temporal("defecto");
+        let c = config(&format!("[[carpeta]]\nruta = '{}'", dir.display()));
+        let k = &c.carpetas[0];
+        assert!(!k.recursiva);
+        assert_eq!(k.ignorar, IGNORAR_POR_DEFECTO);
+        assert_eq!(k.ignorar, ["*.tmp", "*.crdownload", "*.part", "~$*"]);
+        assert_eq!(k.antirrebote_ms, 2000);
+        assert_eq!(k.por_hora, 120);
+        assert!(c.apps.is_empty(), "las carpetas no necesitan apps");
+    }
+
+    #[test]
+    fn validar_rechaza_las_carpetas_que_no_valen_y_dice_cual() {
+        let mala = |toml: &str| match toml::from_str::<Config>(toml) {
+            Err(_) => String::from("no es TOML válido para la configuración"),
+            Ok(c) => validar(&c).expect_err("tenía que rechazarse").to_string(),
+        };
+        let dir = carpeta_temporal("validar");
+        let fichero = dir.join("no-soy-carpeta.txt");
+        std::fs::write(&fichero, "x").expect("fichero");
+        let falta = dir.join("no-existo");
+
+        assert!(mala("[[carpeta]]\nruta = ''").contains("ruta vacía"));
+        assert!(mala("[[carpeta]]\nruta = '   '").contains("ruta vacía"));
+        assert!(mala("[[carpeta]]\nrecursiva = true").contains("no es TOML válido"), "la ruta es obligatoria");
+        let e = mala(&format!("[[carpeta]]\nruta = '{}'", falta.display()));
+        assert!(e.contains("no existe") && e.contains(&falta.display().to_string()), "{e}");
+        let e = mala(&format!("[[carpeta]]\nruta = '{}'", fichero.display()));
+        assert!(e.contains("no es una carpeta") && e.contains(&fichero.display().to_string()), "{e}");
+        let e = mala(&format!("{}{}", toml_de(&dir, ""), toml_de(&dir, "")));
+        assert!(e.contains("repetida") && e.contains(&dir.display().to_string()), "{e}");
+        let con_barra = format!("{}{}", toml_de(&dir, ""), toml_de(&dir.join(""), ""));
+        assert!(mala(&con_barra).contains("repetida"), "la misma carpeta escrita de otra forma");
+        assert!(mala(&toml_de(&dir, "por_hora = 0")).contains("por_hora"));
+        assert!(mala(&toml_de(&dir, "campo_inventado = 1")).contains("no es TOML válido"), "deny_unknown_fields");
+        let otra = carpeta_temporal("validar-otra");
+        validar(&toml::from_str(&format!("{}{}", toml_de(&dir, ""), toml_de(&otra, ""))).expect("toml")).expect("dos carpetas distintas valen");
+    }
+
+    #[test]
+    fn los_patrones_de_ignorar_miran_el_nombre_sin_distinguir_mayusculas() {
+        let p: Vec<String> = IGNORAR_POR_DEFECTO.iter().map(|s| s.to_string()).collect();
+        for si in ["a.tmp", "INFORME.TMP", "informe.pdf.crdownload", "video.part", "~$carta.docx", ".tmp"] {
+            assert!(ignorado(si, &p), "{si} se ignora");
+        }
+        for no in ["informe.pdf", "a.tmpx", "video.partial", "carta~$.docx", "tmp", "part.txt"] {
+            assert!(!ignorado(no, &p), "{no} no se ignora");
+        }
+        let otros = vec!["foto_??.jpg".to_string(), "*copia*".to_string()];
+        assert!(ignorado("foto_12.jpg", &otros) && !ignorado("foto_123.jpg", &otros));
+        assert!(ignorado("informe (copia) 2.pdf", &otros));
+    }
+
+    #[test]
+    fn una_carpeta_tiene_su_tope_por_hora_en_el_limitador() {
+        let dir = carpeta_temporal("tope");
+        let c = config(&toml_de(&dir, "por_hora = 2"));
+        let fuente = format!("carpeta:{}", dir.display());
+        let mut l = Limitador::new(&c);
+        let t0 = Instant::now();
+        let mut salen = Vec::new();
+        for i in 0..4u64 {
+            let mut e = Evento::nuevo(fuente.clone(), "carpeta.fichero", Value::String(format!("f{i} (1 bytes)")));
+            e.gravedad = Some("info".into());
+            salen.extend(l.admitir(e, t0 + Duration::from_secs(i)));
+        }
+        assert_eq!(tipos(&salen), ["carpeta.fichero", "carpeta.fichero", "enganche.tope"]);
+        assert_eq!(salen[2].atributo("callados"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn un_fichero_nuevo_da_un_evento_con_sus_atributos() {
+        let dir = carpeta_temporal("nuevo");
+        let mut c = vigilar(&dir, "");
+        let tanteos = c.tanteos();
+        assert_eq!(tipos(&tanteos), ["enganche.tanteo"]);
+        assert_eq!(tanteos[0].fuente, format!("enganche:carpeta:{}", dir.display()));
+
+        std::fs::write(dir.join("hola.txt"), "hola mundo").expect("escribir");
+        let mut llegados = Vec::new();
+        esperar(&mut c, &mut llegados, con_nombre("hola.txt"));
+        assert_eq!(llegados.len(), 1, "{llegados:?}");
+        let e = &llegados[0];
+        let ruta = dir.display().to_string();
+        assert_eq!(e.tipo, "carpeta.fichero");
+        assert_eq!(e.fuente, format!("carpeta:{ruta}"));
+        assert_eq!(e.gravedad.as_deref(), Some("info"));
+        assert_eq!(e.cuerpo, json!("hola.txt (10 bytes)"));
+        assert_eq!(e.atributos, json!({"carpeta": ruta, "relativa": "hola.txt", "nombre": "hola.txt", "bytes": 10}));
+    }
+
+    #[test]
+    fn un_fichero_escrito_en_varios_pasos_da_un_solo_evento() {
+        let dir = carpeta_temporal("pasos");
+        let mut c = vigilar(&dir, "");
+        let mut llegados = Vec::new();
+        {
+            let mut f = std::fs::File::create(dir.join("datos.csv")).expect("crear");
+            for paso in 0..4 {
+                f.write_all(format!("fila {paso}\n").as_bytes()).expect("escribir");
+                f.flush().expect("vaciar");
+                // Mientras escribe, se recoge: así se ve que no sale nada a medias.
+                let pausa = Instant::now() + Duration::from_millis(150);
+                while Instant::now() < pausa {
+                    llegados.extend(c.recoger(Instant::now()));
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+            }
+        }
+        let total = std::fs::metadata(dir.join("datos.csv")).expect("metadatos").len();
+        esperar(&mut c, &mut llegados, con_nombre("datos.csv"));
+        testigo(&mut c, &dir, &mut llegados);
+        assert_eq!(nombres(&llegados), ["datos.csv", "testigo.txt"], "{llegados:?}");
+        let e = llegados.iter().find(|e| nombre(e) == "datos.csv").expect("datos.csv");
+        assert_eq!(e.atributo("bytes"), Some(&json!(total)), "el tamaño final, no uno a medias");
+    }
+
+    #[test]
+    fn una_descarga_renombrada_da_un_solo_evento_con_el_nombre_final() {
+        let dir = carpeta_temporal("descarga");
+        let mut c = vigilar(&dir, "");
+        let mut llegados = Vec::new();
+        let a_medias = dir.join("informe.pdf.crdownload");
+        {
+            let mut f = std::fs::File::create(&a_medias).expect("crear");
+            for _ in 0..3 {
+                f.write_all(&[7u8; 1000]).expect("escribir");
+                llegados.extend(c.recoger(Instant::now()));
+            }
+        }
+        std::fs::rename(&a_medias, dir.join("informe.pdf")).expect("renombrar");
+        esperar(&mut c, &mut llegados, con_nombre("informe.pdf"));
+        testigo(&mut c, &dir, &mut llegados);
+        assert_eq!(nombres(&llegados), ["informe.pdf", "testigo.txt"], "{llegados:?}");
+        let e = llegados.iter().find(|e| nombre(e) == "informe.pdf").expect("informe.pdf");
+        assert_eq!(e.atributo("relativa"), Some(&json!("informe.pdf")));
+        assert_eq!(e.atributo("bytes"), Some(&json!(3000)));
+    }
+
+    #[test]
+    fn un_nombre_ignorado_no_da_ninguno() {
+        let dir = carpeta_temporal("ignorado");
+        let mut c = vigilar(&dir, "");
+        std::fs::write(dir.join("borrador.tmp"), "x").expect("escribir");
+        std::fs::write(dir.join("~$carta.docx"), "x").expect("escribir");
+        std::fs::write(dir.join("video.part"), "x").expect("escribir");
+        let mut llegados = Vec::new();
+        testigo(&mut c, &dir, &mut llegados);
+        assert_eq!(nombres(&llegados), ["testigo.txt"], "{llegados:?}");
+
+        let dir = carpeta_temporal("ignorado-propio");
+        let mut c = vigilar(&dir, "ignorar = [\"*.log\"]");
+        std::fs::write(dir.join("traza.log"), "x").expect("escribir");
+        std::fs::write(dir.join("sí.tmp"), "x").expect("escribir");
+        let mut llegados = Vec::new();
+        testigo(&mut c, &dir, &mut llegados);
+        assert_eq!(nombres(&llegados), ["sí.tmp", "testigo.txt"], "ignorar sustituye a los de por defecto");
+    }
+
+    #[test]
+    fn una_subcarpeta_solo_cuenta_con_recursiva() {
+        let dir = carpeta_temporal("sin-recursiva");
+        let mut c = vigilar(&dir, "");
+        std::fs::create_dir(dir.join("sub")).expect("subcarpeta");
+        std::fs::write(dir.join("sub").join("dentro.txt"), "abc").expect("escribir");
+        let mut llegados = Vec::new();
+        testigo(&mut c, &dir, &mut llegados);
+        assert_eq!(nombres(&llegados), ["testigo.txt"], "ni la subcarpeta ni lo de dentro: {llegados:?}");
+
+        let dir = carpeta_temporal("recursiva");
+        let mut c = vigilar(&dir, "recursiva = true");
+        std::fs::create_dir(dir.join("sub")).expect("subcarpeta");
+        std::fs::write(dir.join("sub").join("dentro.txt"), "abc").expect("escribir");
+        let mut llegados = Vec::new();
+        esperar(&mut c, &mut llegados, con_nombre("dentro.txt"));
+        testigo(&mut c, &dir, &mut llegados);
+        assert_eq!(nombres(&llegados), ["dentro.txt", "testigo.txt"], "la subcarpeta no es un fichero: {llegados:?}");
+        let e = llegados.iter().find(|e| nombre(e) == "dentro.txt").expect("dentro.txt");
+        let relativa = Path::new("sub").join("dentro.txt").display().to_string();
+        assert_eq!(e.atributo("relativa"), Some(&json!(relativa)));
+        assert_eq!(e.atributo("bytes"), Some(&json!(3)));
+        assert_eq!(e.cuerpo, json!(format!("{relativa} (3 bytes)")));
+    }
+}
+
 // --- Escritorio: ev enganchar de verdad, contra un bus de verdad y un doble con ventana ---
 
 #[cfg(windows)]

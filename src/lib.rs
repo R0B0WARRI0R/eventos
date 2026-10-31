@@ -5,6 +5,7 @@
 
 pub mod almacen;
 pub mod arneses;
+pub mod carpetas;
 pub mod cliente;
 pub mod enganchar;
 pub mod enganches;
