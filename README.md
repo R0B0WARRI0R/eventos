@@ -58,9 +58,27 @@ ev servir --reglas D:\dev\eventos\reglas.toml
 - **Hooks (hecho el 2026-10-29):**
   - En los ajustes de usuario, `D:\Programas\BusEventos\ev.exe hook` va como hook asíncrono (`"async": true`) en `SessionStart`, `UserPromptSubmit`, `Notification`, `Stop` y `SessionEnd`, así que nunca hace esperar a Claude Code.
   - Publica `claude.<evento>` con la sesión como correlación.
+  - No publica las sesiones internas de las apps, como las de Constructo (ver «Sesiones internas de las apps», más abajo).
   - Guarda solo lo necesario para saber qué sesión hace qué: sesión, carpeta, modo de permisos, motivo, aviso y herramienta. No copia lo que ella escribe, lo que entra y sale de las herramientas, la última respuesta ni la transcripción; de eso queda solo el nombre en `omitidos`.
   - Comprobado con una sesión real: llegan los cuatro eventos de una sesión `-p` (`Notification` no salta en ese modo).
 - **MCP en todas sus sesiones (hecho el 2026-10-30; se llama `pulso` desde el 2026-10-31):** `claude mcp add --scope user pulso -- D:\Programas\BusEventos\ev.exe mcp` (copia previa de `~/.claude.json` en `D:\Backups`). Da `publicar`, `buscar` y `esperar`; en una sesión interactiva, también `suscribir`, `suscripciones` y `desuscribir`. Los agentes de las reglas, y cualquier `claude -p` o Agent SDK (`CLAUDE_CODE_ENTRYPOINT=sdk-*`), solo ven las tres primeras: ahí Claude Code no entrega canales.
+
+### Sesiones internas de las apps (desde 2026-10-31)
+
+`ev hook` no publica nada de una sesión cuyo `cwd` esté dentro de una carpeta ignorada: ni al bus ni a la cola en disco. Tampoco escribe nada y sigue terminando con 0, así que no frena a Claude Code. Así, en el bus se ven la app y las sesiones de verdad, no el ruido: el 2026-10-31, 216 de los 226 `SessionStart` del día eran sesiones internas de Constructo.
+
+- **Por defecto:** `<carpeta temporal>\lector-ia-skills`, donde Constructo abre sus `claude -p` internas (`sesion-<pid>-<azar>`). La carpeta temporal es la de `TEMP`, la misma que usa Constructo (`os.tmpdir()` de Node); sin `TEMP`, la de `std::env::temp_dir()`.
+- **Más carpetas, sin recompilar:** `EV_HOOK_IGNORAR`, con rutas absolutas separadas por `;`, que se suman a la de por defecto.
+  - Se quitan los espacios y las comillas de cada ruta, y las entradas vacías no cuentan.
+  - Una entrada `-` quita la de por defecto: `EV_HOOK_IGNORAR=-` no ignora nada, y `-;D:\otra` ignora solo `D:\otra`.
+  - La variable tiene que estar en el entorno con el que Claude Code lanza el hook; por ejemplo, como variable de usuario de Windows. Lo que ya estaba abierto al crearla no la ve.
+- **Cómo compara:** por componentes de la ruta, no por prefijo de texto.
+  - `…\lector-ia-skills2` no casa con `…\lector-ia-skills`, ni otra carpeta `lector-ia-skills` fuera de la temporal.
+  - En Windows no distingue mayúsculas, y `/` vale como `\`, también repetidas o al final.
+  - Una entrada sin componentes, como `\`, no ignora nada.
+  - Solo compara el texto: no resuelve nombres cortos (8.3), enlaces ni `..`.
+- **Presencia:** no cambia. `conectados` sale de los latidos de `ev mcp`, no del hook. Las sesiones de Constructo no cargan `ev mcp`, porque van con `--strict-mcp-config` y sin `--mcp-config` (visto en su código el 2026-10-31); así que tampoco laten.
+- **Tareas:** sin sus `claude.*`, esas sesiones ya no salen en el panel de tareas.
 
 ### Avisos por suscripción (desde 2026-10-30)
 
@@ -216,9 +234,10 @@ Cada una cubre algo que la biblioteca estándar no trae:
 cargo test --jobs 2
 ```
 
-Son 56, más las de los enganches (`tests/enganches.rs`: 15, y 3 de escritorio que van aparte):
+Son 59, más las de los enganches (`tests/enganches.rs`: 15, y 3 de escritorio que van aparte):
 
-- **28 contra el servicio de verdad**, en un puerto libre y con su propia carpeta.
+- **31 contra el servicio de verdad**, en un puerto libre y con su propia carpeta.
+  - Tres son del 2026-10-31, de las sesiones que `ev hook` no publica: lo de la carpeta de Constructo no llega al bus ni a la cola y lo demás sí; la comparación va por componentes (un nombre que empieza igual no casa; mayúsculas y separadores dan igual); y `EV_HOOK_IGNORAR` suma carpetas y, con `-`, quita la de por defecto. Las tres fallaban sin el cambio, y detectaron cinco mutaciones: comparar por prefijo de texto, distinguir mayúsculas, aceptar solo `\`, dejar que una entrada vacía lo ignore todo y no hacer caso de `-`.
   - Una es del 2026-10-31, la de quién está conectado. Una sesión y un `-p` laten y se cuentan como sesión y como agente. El `-p` muerto sale de la lista al dejar de latir, y no antes. La sesión que cierra su entrada se despide y sale en el acto. Un latido que no vale se rechaza. Si se quita la despedida, la prueba falla (mutación comprobada).
   - Once salen de las dos revisiones independientes, una por cada objeción.
   - Cuatro son del 2026-10-29: la comprobación de herramientas, las dos de qué guarda el hook (lo que no guarda y lo que sí) y la de `/tareas`.

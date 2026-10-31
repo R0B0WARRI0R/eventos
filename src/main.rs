@@ -21,7 +21,8 @@ const AYUDA: &str = "ev — Pulso, el bus de eventos universal (v0)
   ev seguir [--tipo T]              muestra los eventos según llegan (Ctrl+C para salir)
   ev estado | ev pausa | ev reanudar
 
-Entorno: EV_PUERTO (8870), EV_DIR (carpeta de datos), EV_CLAUDE (ruta de claude).";
+Entorno: EV_PUERTO (8870), EV_DIR (carpeta de datos), EV_CLAUDE (ruta de claude),
+EV_HOOK_IGNORAR (más carpetas, separadas por ;, cuyas sesiones no publica ev hook; - quita la de por defecto).";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
