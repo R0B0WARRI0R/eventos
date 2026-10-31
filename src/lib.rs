@@ -17,6 +17,7 @@ pub mod reglas;
 pub mod run;
 pub mod servidor;
 pub mod suscripciones;
+pub mod tail;
 pub mod tareas;
 pub mod texto;
 

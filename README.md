@@ -46,6 +46,7 @@ ev servir --reglas D:\dev\eventos\reglas.toml
 | Orden | Qué hace |
 |---|---|
 | `ev run -- cargo test` | Lanza la orden. La salida se ve igual que siempre y cada línea, el inicio y el final (con su código) se guardan como eventos. |
+| `ev tail D:\ruta\app.log --app constructo` | Sigue un fichero de registro y publica cada línea nueva hasta Ctrl+C. Ver «Seguir ficheros de registro». |
 | `ev ver --tipo proceso.fin --limite 20` | Consulta por tipo, fuente (prefijo), correlación, causa, desde y hasta. Da los últimos 100 (o `--limite`, como mucho 1000); con `--despues SEQ`, los primeros tras ese seq. Si llega al tope, avisa por stderr del `--despues` con el que seguir. |
 | `ev buscar media notas` | Búsqueda de texto completo en tipo, fuente y cuerpo. |
 | `ev cadena <id>` | Árbol causal de un evento: qué lo provocó y todo lo que provocó él. |
@@ -174,6 +175,44 @@ por_hora = 120                  # por defecto 120, como las apps
 
 No inyecta nada en las apps ni necesita administrador. Hoy vigila Constructo, Obsidian y Brave. Diseño completo y fases siguientes en `docs/2026-10-30-diseno-enganches.md`. Las pruebas de escritorio se lanzan con `cargo test --test enganches -- --ignored --test-threads=1`.
 
+### Seguir ficheros de registro (desde 2026-10-31)
+
+Para ver lo que una app escribe en su registro mientras XANA trabaja en ella con Victoria. Hay dos formas:
+
+- **`ev tail <ruta>... [--app SLUG] [--desde-inicio] [--por-segundo N]`**, sin tocar configuración. Es lo que XANA lanza en segundo plano mientras trabaja en una app; sigue hasta Ctrl+C o hasta que se cierre el proceso. Las rutas relativas se toman desde la carpeta actual. `--segundos N` termina solo a los N segundos.
+- **Entradas `[[fichero]]` en `enganches.toml`**, que `ev enganchar` vigila junto a las apps:
+
+  ```toml
+  [[fichero]]
+  ruta = 'D:\Programas\Constructo-win32-x64\registro.log'   # obligatoria y absoluta; puede no existir aún
+  app = "constructo"     # opcional: va en los atributos y, si la app está abierta, en su correlación
+  desde_inicio = false   # leer también lo que ya tenía al empezar
+  por_segundo = 20       # tope de líneas por segundo (de 1 a 1000)
+  ```
+
+  `ev enganchar` rechaza al arrancar una ruta vacía, relativa, con comodines (`*`, `?`), que sea una carpeta o repetida (sin distinguir mayúsculas ni el tipo de barra), un `por_segundo` fuera de 1 a 1000 y una `app` que no tenga forma de slug.
+
+Qué publica, siempre con la fuente `fichero:<ruta>`:
+
+- **`registro.linea`**: cada línea nueva, con `confianza: externa` (una línea de registro puede traer texto de terceros) y `atributos` `ruta`, `linea` (su número en el fichero), `app` si se dio, e `incompleta` si se quedó sin salto. Las líneas vacías cuentan para la numeración, pero no se publican. En `ev enganchar`, si la `app` está abierta, la línea va con la correlación de su arranque (`app:<slug>:<arranque>`), junto a su `app.inicio`; con `ev tail`, sin correlación.
+- **`registro.inicio`**: uno por fichero al empezar, cuando ya está decidido desde dónde se lee. Dice si existe y cuántas líneas tenía (`saltadas`). Lo que se escriba después de verlo en el bus se publicará.
+- **`registro.rotado`**: se vuelve a leer desde el principio. `motivo` vale `encogido`, `cambiado` o `desaparecido`.
+- **`registro.tope`** (aviso): se han descartado líneas por pasar del tope. Lleva cuántas y cuáles (`desde_linea`, `hasta_linea`), para ir a leerlas al fichero. Sale una vez por racha, cuando acaba.
+- **`registro.error`** (aviso): no se puede leer el fichero (por ejemplo, otro programa lo tiene en exclusiva). Sale una vez por cada error distinto.
+
+Cómo lee:
+
+- **Por defecto empieza al final**, tras la última línea completa: lo que ya había no se vuelve a publicar. Con `--desde-inicio` o `desde_inicio = true`, sí.
+- **Solo líneas completas.** Lo que va tras el último salto espera en un búfer hasta que llega el suyo. Si el fichero se rota con una línea a medias, esa línea sale como `incompleta`: era lo último del fichero de antes.
+- **Rotación y truncado:** si el fichero encoge, o si cambian sus primeros 64 bytes o los 64 de justo antes de donde iba, lo relee desde 0. La segunda comprobación sirve para las apps que empiezan su registro siempre con la misma cabecera.
+- **Si aún no existe**, también su carpeta, espera a que aparezca y lo lee desde 0, porque todo lo que trae es nuevo.
+- **Decodificación igual que `ev run`:** UTF-8 y, si no lo es, la página OEM (cp850). Quita los `\r` de los finales CRLF y la marca de orden de bytes del principio. Una línea de más de 64 KB se guarda recortada.
+- **No estorba a la app.** Abre el fichero en cada pasada, compartido para leer, escribir y borrar, y lo cierra en seguida: la app puede rotarlo o borrarlo mientras se sigue.
+- **`notify` y sondeo:** `notify` avisa de los cambios en la carpeta y la lectura es inmediata. Además se miran todos los ficheros cada segundo. Comprobado en este equipo el 2026-10-31: si la app mantiene el fichero abierto y solo vacía su búfer, Windows no avisa (tres veces, 20 s cada una, sin aviso). En ese caso la línea llega por el sondeo, en 1 s como mucho.
+- **Tope por fichero:** 20 líneas por segundo por defecto, en ventana deslizante. En `ev enganchar` cuentan también para el tope global (`por_segundo_global`). Allí dos líneas iguales seguidas no se toman por una repetición, como sí se hace con los demás eventos.
+
+Límites: no guarda por dónde iba entre un arranque y otro, así que al volver a lanzarlo empieza otra vez al final. No admite comodines ni registros en UTF-16. Si la app rota el fichero cambiándole el nombre, lo que escribiera entre la última pasada y la rotación se pierde. Si `ev tail` se mata sin Ctrl+C, se pueden perder los eventos del último cuarto de segundo, que aún no se habían enviado.
+
 ## Reglas
 
 Las reglas están en `reglas.toml`. Cada una dice: cuando llegue un evento de este `tipo` (y, si se indica, con esta `fuente`, estos `atributos` o `atributos_distinto`), llama a este `arnes` con este `encargo`.
@@ -246,7 +285,7 @@ Cada una cubre algo que la biblioteca estándar no trae:
 - `toml` (reglas).
 - `ulid` (ids ordenables).
 - `regex` (redacción).
-- `notify` (carpetas vigiladas de los enganches).
+- `notify` (carpetas vigiladas de los enganches y avisos de cambios de los ficheros de registro que se siguen).
 - `windows-sys` (decodificar la página OEM, cp850).
 
 ## Pruebas
@@ -255,9 +294,10 @@ Cada una cubre algo que la biblioteca estándar no trae:
 cargo test --jobs 2
 ```
 
-Son 59, más las de los enganches (`tests/enganches.rs`: 24, nueve de ellas de las carpetas vigiladas, con carpetas temporales de verdad; y 3 de escritorio que van aparte):
+Son 60, más las de los enganches (`tests/enganches.rs`: 24, nueve de ellas de las carpetas vigiladas, con carpetas temporales de verdad; y 3 de escritorio que van aparte) y las de los ficheros de registro (`tests/tail.rs`: 20, desde el 2026-10-31; 14 de piezas sueltas con ficheros temporales y 6 con `ev tail` o `ev enganchar` contra un bus de verdad):
 
-- **31 contra el servicio de verdad**, en un puerto libre y con su propia carpeta.
+- **32 contra el servicio de verdad**, en un puerto libre y con su propia carpeta.
+  - Una es del 2026-10-31, del tope de `ev ver` y `ev buscar`: al llegar al tope avisan por stderr con el `--despues` con el que seguir, y por debajo no; `--despues` pagina. Falla con el `main.rs` de antes.
   - Tres son del 2026-10-31, de las sesiones que `ev hook` no publica: lo de la carpeta de Constructo no llega al bus ni a la cola y lo demás sí; la comparación va por componentes (un nombre que empieza igual no casa; mayúsculas y separadores dan igual); y `EV_HOOK_IGNORAR` suma carpetas y, con `-`, quita la de por defecto. Las tres fallaban sin el cambio, y detectaron cinco mutaciones: comparar por prefijo de texto, distinguir mayúsculas, aceptar solo `\`, dejar que una entrada vacía lo ignore todo y no hacer caso de `-`.
   - Una es del 2026-10-31, la de quién está conectado. Una sesión y un `-p` laten y se cuentan como sesión y como agente. El `-p` muerto sale de la lista al dejar de latir, y no antes. La sesión que cierra su entrada se despide y sale en el acto. Un latido que no vale se rechaza. Si se quita la despedida, la prueba falla (mutación comprobada).
   - Once salen de las dos revisiones independientes, una por cada objeción.
@@ -280,7 +320,6 @@ El arnés de Claude se prueba con un `claude` falso (un `.cmd`) que guarda sus a
 - Lanzadores de Codex, opencode y Grok.
 - Meter eventos en sesiones ya abiertas sin el canal: con el canal ya se hace (avisos por suscripción, 2026-10-30).
 - ACP.
-- `ev tail` (seguir ficheros).
 - Registro de eventos y ETW de Windows.
 - Pseudoconsola (ConPTY) para los programas en C que acumulan su salida.
 - Varias máquinas.

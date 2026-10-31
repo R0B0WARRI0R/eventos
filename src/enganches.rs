@@ -1,7 +1,8 @@
 //! Enganches, fase 1 (desde 2026-10-30): conectan al bus apps que no tienen salida propia, mirándolas desde fuera
 //! (se abre, se cierra, deja de responder, se cae, cambia de título). Diseño en `docs/2026-10-30-diseno-enganches.md`.
 //!
-//! Aquí van las piezas puras, sin Win32, para probarlas sin escritorio: la configuración (`enganches.toml`), la lectura
+//! Aquí van las piezas puras, sin Win32, para probarlas sin escritorio: la configuración (`enganches.toml`, también
+//! los `[[fichero]]` de registro que sigue `tail.rs` desde la fase 2a), la lectura
 //! de las caídas del registro de Windows, el estado de cada app (`Vigia`) y los topes (`Limitador`). El proceso que las
 //! alimenta con lo que ve Windows es `ev enganchar` (`enganchar.rs`).
 
@@ -46,6 +47,9 @@ pub struct Config {
     /// Carpetas vigiladas (Grupo 2c): un `carpeta.fichero` por cada fichero nuevo. Las vigila `carpetas.rs`.
     #[serde(default, rename = "carpeta")]
     pub carpetas: Vec<Carpeta>,
+    /// Ficheros de registro que se siguen línea a línea (fase 2a, `tail.rs`).
+    #[serde(default, rename = "fichero")]
+    pub ficheros: Vec<Fichero>,
 }
 
 /// Una carpeta vigilada: cada fichero nuevo da un `carpeta.fichero` cuando lleva `antirrebote_ms` sin cambiar de
@@ -75,6 +79,70 @@ fn ignorar_por_defecto() -> Vec<String> {
 }
 fn dos_mil() -> u64 {
     2000
+}
+
+/// Un fichero de registro que se sigue (`[[fichero]]`): cada línea nueva es un `registro.linea`.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Fichero {
+    /// Ruta absoluta del fichero; puede no existir todavía.
+    pub ruta: String,
+    /// La app a la que pertenece (su slug); va en los atributos y, si la app vigilada está en marcha, en la correlación.
+    #[serde(default)]
+    pub app: Option<String>,
+    /// Leer también lo que ya tenía al empezar; si no, solo lo que se añada después.
+    #[serde(default)]
+    pub desde_inicio: bool,
+    /// Tope de líneas por segundo; lo que pase de ahí se descarta y se resume en un `registro.tope`.
+    #[serde(default = "veinte")]
+    pub por_segundo: usize,
+}
+
+/// Líneas por segundo de un fichero si no se dice otra cosa.
+pub const POR_SEGUNDO_FICHERO: usize = 20;
+/// Tope de `por_segundo` de un fichero.
+pub const POR_SEGUNDO_FICHERO_MAX: usize = 1000;
+
+fn veinte() -> usize {
+    POR_SEGUNDO_FICHERO
+}
+
+/// Las rutas de los ficheros que se siguen: absolutas, sin repetir (sin distinguir mayúsculas ni el tipo de barra, como
+/// Windows), sin comodines y que no sean carpetas; `por_segundo` entre 1 y 1000 y la app, si la hay, con forma de slug.
+pub fn validar_ficheros(ficheros: &[Fichero]) -> Resultado<()> {
+    let mut vistas = HashSet::new();
+    for f in ficheros {
+        let ruta = f.ruta.trim();
+        if ruta.is_empty() {
+            return Err("fichero: falta la ruta".into());
+        }
+        if ruta.contains(['*', '?']) {
+            return Err(format!("fichero «{ruta}»: los comodines (* y ?) aún no se admiten; pon cada fichero aparte").into());
+        }
+        if !Path::new(ruta).is_absolute() {
+            return Err(format!("fichero «{ruta}»: la ruta tiene que ser absoluta").into());
+        }
+        if Path::new(ruta).is_dir() {
+            return Err(format!("fichero «{ruta}»: es una carpeta, no un fichero").into());
+        }
+        if !vistas.insert(ruta.replace('/', "\\").trim_end_matches('\\').to_lowercase()) {
+            return Err(format!("fichero «{ruta}»: está repetido").into());
+        }
+        if !(1..=POR_SEGUNDO_FICHERO_MAX).contains(&f.por_segundo) {
+            return Err(format!("fichero «{ruta}»: por_segundo tiene que estar entre 1 y {POR_SEGUNDO_FICHERO_MAX}").into());
+        }
+        if let Some(app) = &f.app {
+            if !es_slug(app) {
+                return Err(format!("fichero «{ruta}»: la app «{app}» no es un slug (a-z, 0-9, - o _)").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Nombre corto válido para una app: a-z, 0-9, - o _, sin vacío.
+pub fn es_slug(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
 }
 
 /// Una orden que se lanza, sin consola y sin esperarla, con cada evento de estos tipos que sale de verdad (pasados los
@@ -175,6 +243,7 @@ pub fn validar(c: &Config) -> Resultado<()> {
     if !(1..=600).contains(&c.colgada_segundos) {
         return Err("colgada_segundos tiene que estar entre 1 y 600".into());
     }
+    validar_ficheros(&c.ficheros)?;
     if let Some(a) = &c.aviso {
         if a.orden.first().is_none_or(|p| p.trim().is_empty()) {
             return Err("aviso: falta la orden (el programa y sus argumentos)".into());
@@ -397,6 +466,13 @@ impl Vigia {
 
     pub fn pids(&self) -> Vec<u32> {
         self.por_pid.keys().copied().collect()
+    }
+
+    /// La correlación del arranque en curso de una app (`app:<slug>:<arranque>`), si está abierta. Sirve para atar las
+    /// líneas de su registro a la misma ejecución que su `app.inicio`.
+    pub fn correlacion_de(&self, slug: &str) -> Option<String> {
+        let i = self.apps.iter().position(|a| a.slug == slug)?;
+        self.en_marcha[i].as_ref().map(|a| format!("app:{slug}:{}", a.id))
     }
 
     /// Los eventos de arranque del propio enganche: uno por app, para que conste qué se vigila y cómo.
@@ -631,7 +707,9 @@ impl Limitador {
     pub fn admitir(&mut self, e: Evento, ahora: Instant) -> Vec<Evento> {
         let clave = (e.fuente.clone(), e.tipo.clone());
         let cuerpo = e.cuerpo_texto();
-        if self.ultimos.get(&clave).is_some_and(|(c, t)| *c == cuerpo && ahora.duration_since(*t) < MARGEN_REPETIDO) {
+        // Dos líneas iguales de un registro son dos cosas que han pasado, no un evento repetido.
+        let repetible = TIPOS_REPETIBLES.contains(&e.tipo.as_str());
+        if !repetible && self.ultimos.get(&clave).is_some_and(|(c, t)| *c == cuerpo && ahora.duration_since(*t) < MARGEN_REPETIDO) {
             return Vec::new();
         }
         if e.gravedad.as_deref() != Some("error") {
@@ -667,10 +745,15 @@ impl Limitador {
             self.global.push_back(ahora);
             self.global_avisado = false;
         }
-        self.ultimos.insert(clave, (cuerpo, ahora));
+        if !repetible {
+            self.ultimos.insert(clave, (cuerpo, ahora));
+        }
         vec![e]
     }
 }
+
+/// Tipos que el `Limitador` no trata como repetición aunque lleguen dos iguales seguidos (sí cuentan para el tope global).
+pub const TIPOS_REPETIBLES: &[&str] = &["registro.linea"];
 
 fn tope(slug: &str, cuerpo: String, atributos: Value) -> Evento {
     Evento {
