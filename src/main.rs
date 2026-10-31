@@ -2,7 +2,7 @@ use eventos::cliente::{Cliente, Envio};
 use eventos::evento::Evento;
 use eventos::servidor::{self, Config};
 use eventos::texto::recortar;
-use eventos::{carpeta_datos, enganchar, hook, mcp, puerto, run, Resultado};
+use eventos::{carpeta_datos, enganchar, hook, mcp, puerto, run, tail, Resultado};
 use serde_json::Value;
 
 const AYUDA: &str = "ev — Pulso, el bus de eventos universal (v0)
@@ -12,6 +12,10 @@ const AYUDA: &str = "ev — Pulso, el bus de eventos universal (v0)
   ev hook                           adaptador para los hooks de Claude Code (JSON por la entrada estándar)
   ev mcp                            servidor MCP por stdio: publicar, buscar, esperar
   ev enganchar [--config F]         vigila desde fuera las apps de enganches.toml (abrir, cerrar, cuelgues, caídas)
+                                    y sigue sus ficheros de registro ([[fichero]])
+  ev tail <ruta>... [--app SLUG] [--desde-inicio] [--por-segundo N]
+                                    sigue ficheros de registro y publica cada línea nueva (registro.linea) hasta
+                                    Ctrl+C; empieza al final, espera al fichero si aún no existe y lo relee si se rota
   ev publicar <tipo> [texto...]     publica un evento a mano
   ev buscar <palabras...> [--limite N]
   ev ver [--tipo T] [--fuente F] [--correlacion C] [--causa I] [--desde T] [--hasta T] [--limite N]
@@ -59,6 +63,10 @@ fn ejecutar(args: &[String]) -> Resultado<i32> {
                 segundos: bandera(resto, "--segundos").map(|s| s.parse()).transpose()?,
             };
             enganchar::ejecutar(&o)?;
+            Ok(0)
+        }
+        Some("tail") => {
+            tail::ejecutar(&tail::opciones(resto)?)?;
             Ok(0)
         }
         Some("mcp") => Ok(mcp::servir()),

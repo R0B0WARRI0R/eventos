@@ -10,7 +10,7 @@
 4. Cada enganche nace con su **antídoto** (orden de soltarse) y se suelta solo si la app se cuelga, se actualiza o inunda el bus. Una **verificación previa** por app (licencia, antitrampas, servicio en línea, hash/versión) es obligatoria antes de cualquier Upgrade.
 5. No se reinventa el sobre: se reutilizan los campos reales de `Evento` (`fuente`, `tipo`, `gravedad`, `cuerpo`, `atributos`, `correlacion`, `causa`, `confianza`). Los enganches solo son fuentes nuevas, baratas, una por tipo de captura.
 
-**Estado (2026-10-31): F1 hecha.** `ev enganchar` en `src/enganchar.rs` (Win32) y `src/enganches.rs` (piezas puras); `enganches.toml` con Constructo, Obsidian y Brave; 17 pruebas en `tests/enganches.rs` (3 de escritorio, `-- --ignored`) con el doble `ejemplos/doble_enganche.rs`. Instalado en `D:\Programas\BusEventos\ev.exe`. Lo que cambió al construirla está marcado «Cambio en F1» en §3.2, §3.4 y §9. Añadido a petición suya (2026-10-31): `[aviso]` en `enganches.toml`. Cuando una app deja de responder o se cae, sale la ventanita de avisos de XANA. Se probó de verdad: salió a los 4 s.
+**Estado (2026-10-31): F1 hecha.** `ev enganchar` en `src/enganchar.rs` (Win32) y `src/enganches.rs` (piezas puras); `enganches.toml` con Constructo, Obsidian y Brave; 17 pruebas en `tests/enganches.rs` (3 de escritorio, `-- --ignored`) con el doble `ejemplos/doble_enganche.rs`. Instalado en `D:\Programas\BusEventos\ev.exe`. Lo que cambió al construirla está marcado «Cambio en F1» en §3.2, §3.4 y §9. Añadido a petición suya (2026-10-31): `[aviso]` en `enganches.toml`. Cuando una app deja de responder o se cae, sale la ventanita de avisos de XANA. Se probó de verdad: salió a los 4 s. **F2a (seguir ficheros de registro) hecha el 2026-10-31** en la rama `pulso/ev-tail`, sin fusionar todavía: §4.1.
 
 ---
 
@@ -124,6 +124,14 @@ Tipo: **`app.titulo`**, gravedad `info`, cuerpo = título nuevo. **Deduplicació
 - **Rotación**: se guarda, además del desplazamiento, el tamaño y una huella del arranque del fichero; si el fichero encoge o cambia la huella, se reabre desde cero (como recomienda la investigación §1). Decodificación: UTF-8 por defecto, con caída a cp850/OEM como ya hace `ev run` (la app puede escribir en la página OEM).
 
 Tipo: **`registro.linea`**, fuente `fichero:<ruta>`, `confianza` según el origen de la app (una línea de log puede traer texto de terceros → `externa`). Un tope de líneas por segundo por fichero evita que un log ruidoso inunde el bus (§8).
+
+**Hecho el 2026-10-31 (F2a, rama `pulso/ev-tail`)** en `src/tail.rs`, con 20 pruebas en `tests/tail.rs`. Se usa de dos formas: `ev tail <ruta>`, sin configuración, que es lo que XANA lanza en segundo plano mientras trabaja en una app, y las entradas `[[fichero]]` de `enganches.toml`, que sigue un hilo de `ev enganchar`. Lo que cambió al construirlo:
+- **Huella de dos trozos.** Se comparan los primeros 64 bytes y también los 64 de justo antes de donde se iba. Muchas apps empiezan su registro siempre con la misma cabecera, y con solo el principio no se notaría que lo han vuelto a empezar.
+- **El sondeo no es opcional.** Medido en este equipo: con la app manteniendo el fichero abierto y vaciando solo su búfer, `ReadDirectoryChangesW` no avisó en 20 s, tres veces seguidas. Por eso se miran todos los ficheros cada segundo, y el tamaño se pide al fichero abierto, no a la carpeta.
+- **No se mantiene abierto.** Se abre en cada pasada, compartido, y se cierra: si se tuviera abierto, la app no podría rotarlo y crear otro con el mismo nombre.
+- **Eventos de apoyo:** `registro.inicio` (desde dónde se lee; sirve también para saber que ya está siguiendo), `registro.rotado` (con su `motivo`), `registro.tope` (cuántas líneas se descartaron y cuáles) y `registro.error` (una vez por error distinto).
+- **En `ev enganchar`**, una línea con `app` de una app abierta va con la correlación de su arranque. El `Limitador` no trata dos líneas iguales como una repetición.
+- **Por defecto** empieza tras la última línea completa, con un tope de 20 líneas por segundo. La ruta tiene que ser absoluta y sin comodines (aún no se admiten). No guarda por dónde iba entre un arranque y otro.
 
 ### 4.2 Notificaciones de Windows de apps elegidas
 
@@ -323,6 +331,8 @@ El cargador valida como `reglas.rs`: `deny_unknown_fields`, slugs únicos, y **r
 | 1 | `app.sin_respuesta` / `app.respuesta` | aviso / info | `app:<slug>` | local |
 | 1 | `app.caida` | error | `app:<slug>` | local |
 | 2 | `registro.linea` | info | `fichero:<ruta>` | externa |
+| 2 | `registro.inicio` / `registro.rotado` | info | `fichero:<ruta>` | local |
+| 2 | `registro.tope` / `registro.error` | aviso | `fichero:<ruta>` | local |
 | 2 | `notificacion.windows` | info | `notif:<slug>` | externa |
 | 2 | `carpeta.fichero` | info | `carpeta:<ruta>` | local |
 | 3 | `ventana.texto` | info | `uia:<slug>` | externa |

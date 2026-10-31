@@ -1,5 +1,6 @@
 //! `ev enganchar`: el proceso de los enganches. Fase 1: mira desde fuera las apps de `enganches.toml` (se abren, se
-//! cierran, dejan de responder, se caen, cambian de título) y lo publica en el bus como cualquier fuente. Vive aparte de
+//! cierran, dejan de responder, se caen, cambian de título) y lo publica en el bus como cualquier fuente. Desde la 2a
+//! (2026-10-31), también sigue sus ficheros de registro (`[[fichero]]`, en un hilo aparte: `tail.rs`). Vive aparte de
 //! `ev servir`: lo que se cuelgue aquí no arrastra al bus. Si el bus no responde, los eventos esperan en la cola en disco
 //! y se vuelve a probar con espera creciente. Diseño en `docs/2026-10-30-diseno-enganches.md`.
 //!
@@ -35,8 +36,9 @@ const LOTE_ESPERA: Duration = Duration::from_millis(250);
 const ESPERA_MAX: Duration = Duration::from_secs(60);
 
 /// Envía los eventos en lotes. Si el bus no responde, van a la cola en disco y se vuelve a probar el bus tras 1 s,
-/// 2, 4… hasta 60: un proceso que vive todo el día no puede quedarse escribiendo en la cola para siempre.
-fn enviar_en_lotes(rx: Receiver<Evento>) {
+/// 2, 4… hasta 60: un proceso que vive todo el día no puede quedarse escribiendo en la cola para siempre. `quien` va
+/// delante de los mensajes (`ev enganchar`, `ev tail`).
+pub(crate) fn enviar_en_lotes(rx: Receiver<Evento>, quien: &str) {
     let cliente = Cliente::nuevo().con_espera(Duration::from_secs(2));
     let mut lote = Vec::new();
     let mut primero: Option<Instant> = None;
@@ -57,24 +59,24 @@ fn enviar_en_lotes(rx: Receiver<Evento>) {
         if toca && !lote.is_empty() {
             if reintento.is_some_and(|t| Instant::now() < t) {
                 if let Err(e) = cliente.encolar(&lote) {
-                    eprintln!("ev enganchar: {} eventos no se pudieron encolar: {e}", lote.len());
+                    eprintln!("{quien}: {} eventos no se pudieron encolar: {e}", lote.len());
                 }
             } else {
                 match cliente.publicar(&lote) {
                     Ok(Envio::Publicado(_)) => {
                         if reintento.take().is_some() {
-                            eprintln!("ev enganchar: el bus vuelve a responder");
+                            eprintln!("{quien}: el bus vuelve a responder");
                         }
                         espera = Duration::from_secs(1);
                     }
                     Ok(Envio::EnCola { ruta, motivo }) => {
                         if reintento.is_none() {
-                            eprintln!("ev enganchar: {motivo}; los eventos esperan en {}", ruta.display());
+                            eprintln!("{quien}: {motivo}; los eventos esperan en {}", ruta.display());
                         }
                         reintento = Some(Instant::now() + espera);
                         espera = (espera * 2).min(ESPERA_MAX);
                     }
-                    Err(e) => eprintln!("ev enganchar: {} eventos no se pudieron ni enviar ni encolar: {e}", lote.len()),
+                    Err(e) => eprintln!("{quien}: {} eventos no se pudieron ni enviar ni encolar: {e}", lote.len()),
                 }
             }
             lote.clear();
@@ -91,11 +93,15 @@ mod win {
     use super::{enviar_en_lotes, Opciones, BARRIDO};
     use crate::enganches::{caida_desde_xml, cargar, orden_de_aviso, Aviso, Limitador, Vigia, CONSULTA_CAIDAS};
     use crate::evento::Evento;
+    use crate::tail::{bucle, Vigilante};
     use crate::{puerto, Resultado};
+    use serde_json::Value;
     use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
     use std::ffi::c_void;
-    use std::sync::mpsc::{self, Sender};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, BOOL, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, WAIT_OBJECT_0,
@@ -262,6 +268,17 @@ mod win {
             }
         }
 
+        /// Lo que han leído los ficheros de registro. Una línea de una app que está abierta va con la correlación de su
+        /// arranque, junto a su `app.inicio`.
+        fn registros(&mut self, rx: &Receiver<Evento>, ahora: Instant) {
+            while let Ok(mut r) = rx.try_recv() {
+                if r.correlacion.is_none() {
+                    r.correlacion = r.atributo("app").and_then(Value::as_str).and_then(|a| self.vigia.correlacion_de(a));
+                }
+                self.publicar(vec![r], ahora);
+            }
+        }
+
         fn titulo(&mut self, hwnd: HWND, ahora: Instant) {
             if !principal(hwnd) {
                 return;
@@ -322,7 +339,7 @@ mod win {
         }
 
         let (tx, rx) = mpsc::channel();
-        let enviador = std::thread::spawn(move || enviar_en_lotes(rx));
+        let enviador = std::thread::spawn(move || enviar_en_lotes(rx, "ev enganchar"));
         let mut e = Enganches {
             vigia: Vigia::new(&config),
             limitador: Limitador::new(&config),
@@ -334,6 +351,21 @@ mod win {
         let inicio = Instant::now();
         let tanteos = e.vigia.tanteos();
         e.publicar(tanteos, inicio);
+
+        // Ficheros de registro: un hilo aparte los lee (notify y sondeo) y deja sus eventos a este bucle, que los pasa
+        // por los topes como todo lo demás.
+        let parar = Arc::new(AtomicBool::new(false));
+        let (tx_registros, rx_registros) = mpsc::channel::<Evento>();
+        let lector = (!config.ficheros.is_empty()).then(|| {
+            let (ficheros, parar) = (config.ficheros.clone(), Arc::clone(&parar));
+            std::thread::spawn(move || {
+                let mut v = Vigilante::new(&ficheros);
+                for r in v.inicios() {
+                    let _ = tx_registros.send(r);
+                }
+                bucle(&mut v, &tx_registros, &parar, None);
+            })
+        });
 
         // Caídas: suscripción al registro Application. El contexto (el emisor) vive mientras viva la suscripción.
         let (tx_caidas, rx_caidas) = mpsc::channel::<String>();
@@ -370,7 +402,8 @@ mod win {
             eprintln!("ev enganchar: Windows no aceptó los avisos de ventanas; las apps se verán cada {} s", BARRIDO.as_secs());
         }
 
-        let nombres: Vec<&str> = config.apps.iter().map(|a| a.nombre.as_str()).collect();
+        let nombres: Vec<&str> =
+            config.apps.iter().map(|a| a.nombre.as_str()).chain(config.ficheros.iter().map(|f| f.ruta.as_str())).collect();
         eprintln!("ev enganchar: vigilo {} (bus en el puerto {})", nombres.join(", "), puerto());
         e.barrer(true, inicio);
         let mut proximo_barrido = inicio + BARRIDO;
@@ -399,6 +432,7 @@ mod win {
                 }
             }
             e.terminados(ahora);
+            e.registros(&rx_registros, ahora);
             if ahora >= proximo_barrido {
                 e.barrer(false, ahora);
                 proximo_barrido = ahora + BARRIDO;
@@ -409,6 +443,11 @@ mod win {
                 break;
             }
         }
+        parar.store(true, Ordering::Relaxed);
+        if let Some(l) = lector {
+            let _ = l.join();
+        }
+        e.registros(&rx_registros, Instant::now());
 
         unsafe {
             for g in ganchos.into_iter().filter(|g| !g.is_null()) {
