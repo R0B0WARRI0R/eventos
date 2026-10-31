@@ -256,18 +256,23 @@ struct SesionMcp {
 impl SesionMcp {
     /// `entrada` hace de CLAUDE_CODE_ENTRYPOINT: «cli» para una sesión interactiva, «sdk-cli» para un `claude -p`.
     fn abrir(d: &Demonio, sesion: &str, entrada: &str) -> Self {
-        let mut hijo = d
-            .ev()
-            .arg("mcp")
+        Self::abrir_con(d, sesion, entrada, &[])
+    }
+
+    fn abrir_con(d: &Demonio, sesion: &str, entrada: &str, entorno: &[(&str, &str)]) -> Self {
+        let mut cmd = d.ev();
+        cmd.arg("mcp")
             .env("CLAUDE_CODE_SESSION_ID", sesion)
             .env("CLAUDE_CODE_ENTRYPOINT", entrada)
             .env_remove("EV_CAUSA")
             .env_remove("EV_REGLA")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("ev mcp");
+            .stderr(Stdio::null());
+        for (k, v) in entorno {
+            cmd.env(k, v);
+        }
+        let mut hijo = cmd.spawn().expect("ev mcp");
         let entrada = hijo.stdin.take().expect("stdin");
         let salida = BufReader::new(hijo.stdout.take().expect("stdout"));
         let (tx, lineas) = std::sync::mpsc::channel();
@@ -322,6 +327,79 @@ impl Drop for SesionMcp {
 
 fn texto_de(resultado: &Value) -> String {
     resultado["content"][0]["text"].as_str().unwrap_or("").to_string()
+}
+
+/// La cuenta de `/estado` y la lista de `/conectados`.
+fn conectados(d: &Demonio) -> (Value, Vec<Value>) {
+    let estado: Value = ureq::get(&d.url("/estado")).call().expect("estado").into_json().expect("JSON");
+    let lista: Vec<Value> = ureq::get(&d.url("/conectados")).call().expect("conectados").into_json().expect("lista");
+    (estado["conectados"].clone(), lista)
+}
+
+/// Espera hasta 10 s a que lo conectado cumpla `ok` (el latido va en su hilo) y devuelve la lista.
+fn esperar_conectados(d: &Demonio, ok: impl Fn(&Value, &[Value]) -> bool) -> Vec<Value> {
+    let fin = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (cuenta, lista) = conectados(d);
+        if ok(&cuenta, &lista) {
+            return lista;
+        }
+        assert!(Instant::now() < fin, "no llegó a lo esperado: {cuenta} {lista:?}");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn el_estado_cuenta_las_sesiones_y_agentes_que_laten_y_olvida_a_los_que_se_van() {
+    let d = Demonio::arrancar("presencia", None);
+    assert_eq!(conectados(&d), (json!({ "total": 0, "sesiones": 0, "agentes": 0 }), vec![]));
+
+    // Una sesión interactiva late en cuanto arranca y, tras initialize, dice qué cliente la abrió.
+    let mut s = SesionMcp::abrir_con(&d, "sesion-viva", "cli", &[("EV_LATIDO_SEGUNDOS", "1")]);
+    let mut avisos = Vec::new();
+    s.pedir("initialize", json!({ "protocolVersion": "2025-06-18", "clientInfo": { "name": "claude-code", "version": "9.9.9" } }), &mut avisos);
+    let lista = esperar_conectados(&d, |c, l| c["sesiones"] == 1 && l.first().is_some_and(|x| x["cliente"] == "claude-code 9.9.9"));
+    let yo = &lista[0];
+    assert_eq!((yo["clase"].as_str(), yo["sesion"].as_str(), yo["pid"].as_u64()), (Some("sesion"), Some("sesion-viva"), Some(s.hijo.id() as u64)));
+    assert_eq!(yo["periodo"], 1);
+    assert!(yo["directorio"].as_str().is_some_and(|x| !x.is_empty()), "{yo}");
+
+    // Un `claude -p` cuenta como agente.
+    let p = SesionMcp::abrir_con(&d, "sesion-p", "sdk-cli", &[("EV_LATIDO_SEGUNDOS", "1")]);
+    esperar_conectados(&d, |c, _| *c == json!({ "total": 2, "sesiones": 1, "agentes": 1 }));
+
+    // Matarlo es como cerrar la ventana: no se despide, así que se va cuando deja de latir tres periodos (3 s).
+    drop(p);
+    let muerto = Instant::now();
+    esperar_conectados(&d, |c, _| c["agentes"] == 0);
+    assert!(muerto.elapsed() >= Duration::from_millis(1500), "se fue sin caducar: {:?}", muerto.elapsed());
+
+    // Una sesión que acaba bien (cierra la entrada) se despide y se va ya, aunque con su periodo de 60 s tardaría 3 min
+    // en caducar.
+    let mut hijo = d
+        .ev()
+        .arg("mcp")
+        .env("CLAUDE_CODE_SESSION_ID", "sesion-que-cierra")
+        .env("CLAUDE_CODE_ENTRYPOINT", "cli")
+        .env("EV_LATIDO_SEGUNDOS", "60")
+        .env_remove("EV_CAUSA")
+        .env_remove("EV_REGLA")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("ev mcp");
+    esperar_conectados(&d, |c, _| c["sesiones"] == 2);
+    drop(hijo.stdin.take());
+    assert!(hijo.wait().expect("fin de ev mcp").success());
+    let (cuenta, lista) = conectados(&d);
+    assert_eq!(cuenta, json!({ "total": 1, "sesiones": 1, "agentes": 0 }), "{lista:?}");
+    assert_eq!(lista[0]["sesion"], "sesion-viva");
+
+    // Un latido que no vale se rechaza.
+    let malo = ureq::post(&d.url("/latido")).send_json(json!({ "id": "x", "clase": "intrusa" }));
+    assert!(matches!(malo, Err(ureq::Error::Status(400, _))), "{malo:?}");
+    drop(s);
 }
 
 #[test]

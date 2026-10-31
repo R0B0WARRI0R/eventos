@@ -1,6 +1,7 @@
 use crate::almacen::{Almacen, Filtro};
 use crate::arneses::{self, Bus};
 use crate::evento::{ahora, Evento};
+use crate::presencia::{Latido, Registro};
 use crate::reglas::{self, Fichero, Motor, Regla, Salida, Veredicto};
 use crate::tareas;
 use crate::texto::redactar_evento;
@@ -32,9 +33,13 @@ pub struct Nucleo {
     puerto: u16,
     carpeta: PathBuf,
     importando: Mutex<()>,
+    /// Los `ev mcp` que laten: sesiones de Claude Code y agentes conectados ahora.
+    presencia: Mutex<Registro>,
 }
 
 const LIMITE_CUERPO: u64 = 8 << 20;
+/// Un latido o una despedida caben de sobra en esto.
+const LIMITE_LATIDO: u64 = 16 << 10;
 
 impl Nucleo {
     pub fn abrir(cfg: &Config, fichero: Fichero) -> Resultado<Arc<Self>> {
@@ -50,6 +55,7 @@ impl Nucleo {
             puerto: cfg.puerto,
             carpeta: cfg.carpeta.clone(),
             importando: Mutex::new(()),
+            presencia: Mutex::new(Registro::default()),
         }))
     }
 
@@ -358,6 +364,16 @@ fn atender(n: &Arc<Nucleo>, mut req: Request) {
             Ok(json!({ "pausado": false }))
         }
         (Method::Get, "/estado") => estado(n),
+        (Method::Post, "/latido") => cuerpo_json(&mut req, LIMITE_LATIDO).and_then(|v| {
+            let l = Latido::desde_json(&v)?;
+            n.presencia.lock().expect("presencia").latir(l, ahora(), Instant::now())?;
+            Ok(json!({ "ok": true }))
+        }),
+        (Method::Post, "/adios") => cuerpo_json(&mut req, LIMITE_LATIDO).map(|v| {
+            let estaba = v["id"].as_str().is_some_and(|id| n.presencia.lock().expect("presencia").adios(id));
+            json!({ "estaba": estaba })
+        }),
+        (Method::Get, "/conectados") => Ok(json!(n.presencia.lock().expect("presencia").lista(Instant::now()))),
         (Method::Get, "/tareas") => {
             // Una línea por tarea con lo llegado en las últimas `horas` (24 por defecto, una semana como mucho).
             let horas = tareas::horas(q.get("horas").map(String::as_str));
@@ -376,10 +392,7 @@ fn atender(n: &Arc<Nucleo>, mut req: Request) {
 }
 
 fn recibir(n: &Arc<Nucleo>, req: &mut Request) -> Resultado<Value> {
-    let mut texto = String::new();
-    Read::take(req.as_reader(), LIMITE_CUERPO).read_to_string(&mut texto)?;
-    let valor: Value = serde_json::from_str(&texto).map_err(|e| format!("JSON inválido: {e}"))?;
-    let lista = match valor {
+    let lista = match cuerpo_json(req, LIMITE_CUERPO)? {
         Value::Array(a) => a,
         otro => vec![otro],
     };
@@ -391,6 +404,12 @@ fn recibir(n: &Arc<Nucleo>, req: &mut Request) -> Resultado<Value> {
     Ok(json!({ "ids": ids }))
 }
 
+fn cuerpo_json(req: &mut Request, limite: u64) -> Resultado<Value> {
+    let mut texto = String::new();
+    Read::take(req.as_reader(), limite).read_to_string(&mut texto)?;
+    Ok(serde_json::from_str(&texto).map_err(|e| format!("JSON inválido: {e}"))?)
+}
+
 fn estado(n: &Arc<Nucleo>) -> Resultado<Value> {
     let eventos = n.almacen.lock().expect("almacén").contar()?;
     let reglas: Vec<&str> = n.motor.reglas().iter().map(|r| r.nombre.as_str()).collect();
@@ -399,8 +418,11 @@ fn estado(n: &Arc<Nucleo>) -> Resultado<Value> {
         "eventos": eventos,
         "ultimo": *n.ultimo.lock().expect("último"),
         "pausado": n.pausado.load(Ordering::SeqCst),
+        // Los agentes que ha lanzado el bus con sus reglas (no cuenta las sesiones: eso va en «conectados»).
         "agentes_activos": n.motor.activos(),
         "pendientes": n.motor.pendientes(),
+        // Los `ev mcp` que laten ahora: sesiones de Claude Code y agentes con el bus como MCP. Detalle en /conectados.
+        "conectados": n.presencia.lock().expect("presencia").cuenta(Instant::now()),
         "reglas": reglas,
         "reglas_detalle": n.motor.reglas(),
         "carpeta": n.carpeta.display().to_string(),

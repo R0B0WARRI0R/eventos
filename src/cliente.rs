@@ -105,6 +105,11 @@ impl Cliente {
         Ok(self.peticion(ureq::post(&format!("{}{ruta}", self.base)).timeout(self.espera))?)
     }
 
+    /// POST con un cuerpo JSON (el latido y la despedida de `ev mcp`).
+    pub fn enviar(&self, ruta: &str, cuerpo: &Value) -> Resultado<Value> {
+        self.respuesta(ureq::post(&format!("{}{ruta}", self.base)).timeout(self.espera).send_json(cuerpo))
+    }
+
     fn get_eventos(&self, ruta: &str, filtro: &[(&str, String)], espera: Duration) -> Resultado<Vec<Evento>> {
         let mut peticion = ureq::get(&format!("{}{ruta}", self.base)).timeout(espera);
         for (k, v) in filtro {
@@ -115,7 +120,11 @@ impl Cliente {
     }
 
     fn peticion(&self, p: ureq::Request) -> Resultado<Value> {
-        match p.call() {
+        self.respuesta(p.call())
+    }
+
+    fn respuesta(&self, r: Result<ureq::Response, ureq::Error>) -> Resultado<Value> {
+        match r {
             Ok(r) => Ok(r.into_json()?),
             Err(ureq::Error::Status(codigo, r)) => {
                 Err(format!("el bus respondió {codigo}: {}", r.into_string().unwrap_or_default()).into())

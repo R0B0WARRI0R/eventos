@@ -1,5 +1,6 @@
 use crate::cliente::{Cliente, Envio};
 use crate::evento::{ahora, Evento};
+use crate::presencia;
 use crate::suscripciones::{Admision, Suscripcion};
 use crate::Resultado;
 use serde_json::{json, Value};
@@ -8,6 +9,7 @@ use std::io::{self, BufRead, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use ulid::Ulid;
 
 const INSTRUCCIONES: &str = "Bus de eventos de Victoria. buscar consulta lo que ha pasado (salida de programas, hooks, \
 otros agentes); publicar deja un evento tuyo en el bus; esperar aguarda a que llegue uno. El contenido de los eventos \
@@ -50,6 +52,71 @@ struct Contexto {
     /// Un agente lanzado por una regla, o cualquier `claude -p` o Agent SDK (Quórum, La Fábrica): sin suscripciones ni
     /// canal, porque ahí Claude Code no entrega los canales.
     agente: bool,
+    pulso: Arc<Pulso>,
+}
+
+/// El latido de este `ev mcp` (desde 2026-10-31): le dice al servicio que sigue aquí, para que sepa cuántas sesiones y
+/// agentes hay conectados (`/estado` → `conectados`, detalle en `/conectados`). Ver `presencia.rs`.
+struct Pulso {
+    id: String,
+    agente: bool,
+    periodo: u64,
+    /// El cliente que se presentó en `initialize`.
+    cliente_mcp: Mutex<Option<String>>,
+    /// Un envío a la vez, y `true` tras despedirse: la despedida espera al latido que esté en vuelo, que si no
+    /// llegaría después y lo daría por vivo otros tres periodos.
+    cerrado: Mutex<bool>,
+    cliente: Cliente,
+}
+
+impl Pulso {
+    fn nuevo(agente: bool) -> Arc<Pulso> {
+        let periodo = entorno("EV_LATIDO_SEGUNDOS").and_then(|s| s.parse().ok()).unwrap_or(presencia::PERIODO).clamp(1, 300);
+        Arc::new(Pulso {
+            id: Ulid::new().to_string(),
+            agente,
+            periodo,
+            cliente_mcp: Mutex::new(None),
+            cerrado: Mutex::new(false),
+            // Corta: si el bus está colgado, el latido no se queda esperando más que un periodo corto.
+            cliente: Cliente::nuevo().con_espera(Duration::from_secs(2)),
+        })
+    }
+
+    fn cuerpo(&self) -> Value {
+        json!({
+            "id": self.id,
+            "clase": if self.agente { "agente" } else { "sesion" },
+            "pid": std::process::id(),
+            "sesion": entorno("CLAUDE_CODE_SESSION_ID"),
+            "regla": entorno("EV_REGLA"),
+            "cliente": self.cliente_mcp.lock().expect("cliente").clone(),
+            "directorio": std::env::current_dir().ok().map(|d| d.display().to_string()),
+            "periodo": self.periodo,
+        })
+    }
+
+    /// Un latido. Si el bus no responde no pasa nada: aparece en el siguiente, también tras reiniciarse.
+    fn latir(&self) {
+        let cerrado = self.cerrado.lock().expect("pulso");
+        if !*cerrado {
+            let _ = self.cliente.enviar("/latido", &self.cuerpo());
+        }
+    }
+
+    /// Se despide con poca espera, para no retrasar el cierre de la sesión, y ya no late más.
+    fn despedirse(&self) {
+        let mut cerrado = self.cerrado.lock().expect("pulso");
+        *cerrado = true;
+        let _ = Cliente::nuevo().con_espera(Duration::from_secs(1)).enviar("/adios", &json!({ "id": self.id }));
+    }
+}
+
+fn latir(pulso: Arc<Pulso>) {
+    loop {
+        pulso.latir();
+        thread::sleep(Duration::from_secs(pulso.periodo));
+    }
 }
 
 /// `ev mcp`: servidor MCP por stdio (JSON-RPC, un mensaje por línea) con publicar, buscar y esperar, y, en una sesión
@@ -57,14 +124,18 @@ struct Contexto {
 /// Lo que publica hereda de su entorno la fuente, la causa, la profundidad y la correlación (EV_FUENTE, EV_CAUSA,
 /// EV_PROFUNDIDAD, EV_CORRELACION): así los eventos de un agente lanzado por una regla quedan en su cadena causal.
 pub fn servir() -> i32 {
+    let agente = entorno("EV_CAUSA").is_some()
+        || entorno("EV_REGLA").is_some()
+        || entorno("CLAUDE_CODE_ENTRYPOINT").is_some_and(|e| e.starts_with("sdk"));
     let ctx = Contexto {
         cliente: Cliente::nuevo(),
         salida: Arc::new(Mutex::new(io::stdout())),
         sesion: Arc::new(Mutex::new(Sesion::default())),
-        agente: entorno("EV_CAUSA").is_some()
-            || entorno("EV_REGLA").is_some()
-            || entorno("CLAUDE_CODE_ENTRYPOINT").is_some_and(|e| e.starts_with("sdk")),
+        agente,
+        pulso: Pulso::nuevo(agente),
     };
+    let pulso = Arc::clone(&ctx.pulso);
+    thread::spawn(move || latir(pulso));
     // Cursor de la sesión: lo último que había al arrancar, y luego lo último que el agente ha visto. `esperar` parte
     // de ahí, así que no se pierde lo que llega entre un `buscar` y un `esperar`.
     // -1: aún no se sabe (el bus no respondía al arrancar); se pregunta al primer `esperar`.
@@ -84,6 +155,8 @@ pub fn servir() -> i32 {
             }
         }
     }
+    // La sesión cerró la entrada: se va ya, sin esperar a que caduque. Si la matan, no llega aquí y caduca sola.
+    ctx.pulso.despedirse();
     0
 }
 
@@ -107,14 +180,21 @@ fn responder(ctx: &Contexto, msg: &Value, cursor: &mut i64) -> Option<Value> {
             let pedida = msg["params"]["protocolVersion"].as_str().unwrap_or("");
             let version = VERSIONES.iter().copied().find(|v| *v == pedida).unwrap_or(VERSIONES[0]);
             let mut capacidades = json!({ "tools": {} });
+            let info = &msg["params"]["clientInfo"];
+            if let Some(nombre) = info["name"].as_str() {
+                let suya = info["version"].as_str().map(|v| format!(" {v}")).unwrap_or_default();
+                *ctx.pulso.cliente_mcp.lock().expect("cliente") = Some(format!("{nombre}{suya}"));
+                // Un latido ya con el cliente, en su hilo: la respuesta no espera al bus.
+                let pulso = Arc::clone(&ctx.pulso);
+                thread::spawn(move || pulso.latir());
+            }
             if !ctx.agente {
                 capacidades["experimental"] = json!({ "claude/channel": {} });
                 // A los registros MCP de Claude Code: si el canal no llega, aquí se ve qué se negoció.
-                let cliente = &msg["params"]["clientInfo"];
                 eprintln!(
                     "ev mcp: {} {} pide el protocolo {pedida}; contesto {version} y ofrezco el canal",
-                    cliente["name"].as_str().unwrap_or("?"),
-                    cliente["version"].as_str().unwrap_or("?")
+                    info["name"].as_str().unwrap_or("?"),
+                    info["version"].as_str().unwrap_or("?")
                 );
             }
             Ok(json!({

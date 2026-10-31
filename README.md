@@ -49,7 +49,7 @@ ev servir --reglas D:\dev\eventos\reglas.toml
 | `ev cadena <id>` | Árbol causal de un evento: qué lo provocó y todo lo que provocó él. |
 | `ev seguir` | Muestra los eventos según llegan. |
 | `ev publicar nota "texto"` | Publica un evento a mano. |
-| `ev pausa` / `ev reanudar` / `ev estado` | Detienen o reanudan los agentes y muestran el estado del bus. |
+| `ev pausa` / `ev reanudar` / `ev estado` | Detienen o reanudan los agentes y muestran el estado del bus, con cuántas sesiones y agentes hay conectados. |
 
 ## Engancharlo a Claude Code
 
@@ -85,6 +85,17 @@ La sesión dice qué quiere que el bus le avise y `ev mcp` se lo empuja por el c
     - El registro MCP dice «Channel notifications registered». La sesión interactiva también pidió la 2025-11-25.
     - Ella pidió «suscríbete en el bus a ensayo.canal». El evento publicado desde otra sesión entró en la suya como `<channel source="eventos" …>` el mismo segundo, con su meta.
     - La XANA de esa sesión lo trató como dato.
+
+### Quién está conectado (desde 2026-10-31)
+
+Cada `ev mcp` late: al arrancar, tras `initialize` y luego cada 15 s (`EV_LATIDO_SEGUNDOS`, de 1 a 300) hace `POST /latido` con su id, su clase (`sesion` si es Claude Code interactivo; `agente` si es una regla, un `claude -p` o el Agent SDK), su pid, la sesión de Claude Code, la regla, el cliente MCP que se presentó y su carpeta.
+
+- `ev estado` y `/estado` traen `conectados`, del tipo `{"total": 2, "sesiones": 1, "agentes": 1}`. El detalle, con la hora del primer latido y cuántos segundos hace del último, está en `http://127.0.0.1:8870/conectados`.
+- `agentes_activos` no cambia: cuenta solo los agentes que ha lanzado el bus con sus reglas.
+- **Al cerrar bien la sesión** (cuando Claude Code cierra la entrada del MCP), `ev mcp` se despide con `POST /adios` y sale de la lista en el acto. **Si lo matan** (por ejemplo, al cerrar la ventana), sale cuando lleva tres periodos sin latir: 45 s por defecto.
+- Los hooks no sirven para contarlas: cerrar la ventana no deja `SessionEnd`. El 2026-10-31, contar `SessionStart` menos `SessionEnd` daba 27 sesiones «abiertas» con una sola viva.
+- La lista vive en memoria y tiene un tope de 256. Tras reiniciar el servicio, cada uno vuelve a aparecer en su siguiente latido. Un `ev mcp` anterior a este cambio no late, así que no aparece hasta que su sesión se reabre o se reconecta con `/mcp`.
+- Si el bus no responde, el latido se pierde sin error ni espera larga, porque usa un plazo de 2 s; la despedida usa 1 s.
 
 ## La Fábrica (desde 2026-10-29)
 
@@ -203,13 +214,14 @@ Cada una cubre algo que la biblioteca estándar no trae:
 cargo test --jobs 2
 ```
 
-Son 53:
+Son 56, más las de los enganches (`tests/enganches.rs`: 15, y 3 de escritorio que van aparte):
 
-- **27 contra el servicio de verdad**, en un puerto libre y con su propia carpeta.
+- **28 contra el servicio de verdad**, en un puerto libre y con su propia carpeta.
+  - Una es del 2026-10-31, la de quién está conectado. Una sesión y un `-p` laten y se cuentan como sesión y como agente. El `-p` muerto sale de la lista al dejar de latir, y no antes. La sesión que cierra su entrada se despide y sale en el acto. Un latido que no vale se rechaza. Si se quita la despedida, la prueba falla (mutación comprobada).
   - Once salen de las dos revisiones independientes, una por cada objeción.
   - Cuatro son del 2026-10-29: la comprobación de herramientas, las dos de qué guarda el hook (lo que no guarda y lo que sí) y la de `/tareas`.
   - Dos son del 2026-10-30. La primera abre una sesión MCP que se suscribe y comprueba que solo le llega lo que pidió: nada suyo, el Stop de otra sesión sí y el suyo no, y un `-p` sin canal. La segunda se suscribe con el bus parado y recibe el aviso al arrancar.
-- **26 de piezas sueltas**: trece, del estado de las tareas (una de ellas, de las de quórum); una, de las reglas del repositorio; cuatro, de las suscripciones (filtro, validación, tope y forma del aviso).
+- **28 de piezas sueltas**: trece, del estado de las tareas (una de ellas, de las de quórum); una, de las reglas del repositorio; cuatro, de las suscripciones (filtro, validación, tope y forma del aviso); dos, de la presencia (caducidad, renovación y despedida; validación del latido y tope).
 
 Las pruebas de suscripción detectaron las cinco mutaciones probadas el 2026-10-30:
 

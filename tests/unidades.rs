@@ -8,7 +8,9 @@ use eventos::tareas::{derivar, desde, horas, Estado, TIPOS};
 use std::time::{Duration, UNIX_EPOCH};
 use eventos::texto::{decodificar, decodificar_con, redactar};
 use eventos::suscripciones::{Admision, Suscripcion};
+use eventos::presencia::{Latido, Registro, MAXIMO, PERIODO};
 use serde_json::{json, Value};
+use std::time::Instant;
 
 /// Un evento ya guardado (con id, seq y hora de llegada) para las pruebas de tareas.
 fn ev(seq: i64, id: &str, tipo: &str, correlacion: &str, cuerpo: Value, atributos: Value) -> Evento {
@@ -514,4 +516,63 @@ fn el_aviso_ensena_cinco_eventos_cuenta_el_resto_y_su_meta_son_identificadores_c
         assert!(aviso["meta"].as_object().expect("meta").values().all(Value::is_string), "{aviso}");
         assert!(aviso["content"].as_str().unwrap_or("").contains("s1"), "{aviso}");
     }
+}
+
+fn latido(id: &str, clase: &str, periodo: u64) -> Latido {
+    Latido::desde_json(&json!({ "id": id, "clase": clase, "periodo": periodo })).expect("latido válido")
+}
+
+#[test]
+fn presencia_cuenta_sesiones_y_agentes_y_olvida_a_quien_deja_de_latir() {
+    let mut r = Registro::default();
+    let t0 = Instant::now();
+    let s = |n: u64| t0 + Duration::from_secs(n);
+    r.latir(latido("a", "sesion", 10), "2026-10-31T10:00:00.000Z".into(), t0).expect("a");
+    r.latir(latido("b", "agente", 1), "2026-10-31T10:00:01.000Z".into(), t0).expect("b");
+    assert_eq!(r.cuenta(t0), json!({ "total": 2, "sesiones": 1, "agentes": 1 }));
+    // Se da por ido tras tres periodos sin latir: b (periodo 1) sigue a los 3 s y no a los 4; a (periodo 10), sí.
+    assert_eq!(r.cuenta(s(3))["total"], 2);
+    assert_eq!(r.cuenta(s(4)), json!({ "total": 1, "sesiones": 1, "agentes": 0 }));
+    // Cada latido renueva: a late a los 25 s y a los 50 sigue (sin él, se habría ido a los 30).
+    r.latir(latido("a", "sesion", 10), "hora de otro latido".into(), s(25)).expect("a otra vez");
+    let lista = r.lista(s(50));
+    assert_eq!(lista.len(), 1);
+    assert_eq!(lista[0]["desde"], "2026-10-31T10:00:00.000Z", "la llegada es la del primer latido");
+    assert_eq!((lista[0]["ultimo_latido_hace_s"].as_u64(), lista[0]["clase"].as_str()), (Some(25), Some("sesion")));
+    assert_eq!(r.cuenta(s(56))["total"], 0);
+    // La despedida lo quita sin esperar a que caduque.
+    r.latir(latido("c", "sesion", 60), String::new(), t0).expect("c");
+    assert!(r.adios("c"));
+    assert!(!r.adios("c"), "ya no estaba");
+    assert_eq!(r.cuenta(t0)["total"], 0);
+}
+
+#[test]
+fn presencia_valida_el_latido_y_tiene_tope() {
+    let largo = "x".repeat(65);
+    for malo in [
+        json!({ "clase": "sesion" }),
+        json!({ "id": "a b", "clase": "sesion" }),
+        json!({ "id": largo, "clase": "sesion" }),
+        json!({ "id": "a", "clase": "otra" }),
+        json!({ "id": "a", "clase": "sesion", "periodo": 0 }),
+        json!({ "id": "a", "clase": "sesion", "periodo": 301 }),
+        json!({ "id": "a", "clase": "sesion", "periodo": "15" }),
+    ] {
+        assert!(Latido::desde_json(&malo).is_err(), "no debía valer: {malo}");
+    }
+    let l = Latido::desde_json(&json!({ "id": "01K-a_b", "clase": "agente", "pid": 7, "regla": "r", "cliente": "  ", "directorio": "D:\\dev" }))
+        .expect("válido");
+    assert_eq!((l.periodo, l.pid, l.regla.as_deref()), (PERIODO, Some(7), Some("r")));
+    assert_eq!((l.cliente, l.directorio.as_deref()), (None, Some("D:\\dev")), "un texto en blanco es como no darlo");
+
+    let mut r = Registro::default();
+    let t = Instant::now();
+    for i in 0..MAXIMO {
+        r.latir(latido(&format!("s{i}"), "sesion", 60), String::new(), t).expect("cabe");
+    }
+    assert!(r.latir(latido("otro", "sesion", 60), String::new(), t).is_err(), "lleno: uno nuevo no cabe");
+    assert!(r.latir(latido("s0", "sesion", 60), String::new(), t).is_ok(), "lleno: quien ya estaba sigue latiendo");
+    // Lo caducado deja sitio.
+    assert!(r.latir(latido("otro", "sesion", 60), String::new(), t + Duration::from_secs(181)).is_ok());
 }
