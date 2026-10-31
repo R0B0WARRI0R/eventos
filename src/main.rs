@@ -13,8 +13,10 @@ const AYUDA: &str = "ev — Pulso, el bus de eventos universal (v0)
   ev mcp                            servidor MCP por stdio: publicar, buscar, esperar
   ev enganchar [--config F]         vigila desde fuera las apps de enganches.toml (abrir, cerrar, cuelgues, caídas)
   ev publicar <tipo> [texto...]     publica un evento a mano
-  ev buscar <palabras...> [--limite N]
-  ev ver [--tipo T] [--fuente F] [--correlacion C] [--causa I] [--desde T] [--hasta T] [--limite N]
+  ev buscar <palabras...> [--limite N] [--despues SEQ]
+  ev ver [--tipo T] [--fuente F] [--correlacion C] [--causa I] [--desde T] [--hasta T] [--limite N] [--despues SEQ]
+                                    sin --despues, los últimos N (100; como mucho 1000); con él, los N primeros
+                                    tras ese seq. Si llega al tope, avisa por stderr del seq con el que seguir
   ev cadena <id>                    el árbol causal de un evento
   ev seguir [--tipo T]              muestra los eventos según llegan (Ctrl+C para salir)
   ev estado | ev pausa | ev reanudar
@@ -80,15 +82,14 @@ fn ejecutar(args: &[String]) -> Resultado<i32> {
             }
             let mut f = vec![("texto", texto)];
             f.extend(bandera(resto, "--limite").map(|l| ("limite", l)));
-            imprimir(&Cliente::nuevo().consultar(&f)?, false);
-            Ok(0)
+            f.extend(bandera(resto, "--despues").map(|s| ("despues", s)));
+            consultar_e_imprimir(&f)
         }
         Some("ver") => {
-            let claves = ["tipo", "fuente", "correlacion", "causa", "desde", "hasta", "limite"];
+            let claves = ["tipo", "fuente", "correlacion", "causa", "desde", "hasta", "limite", "despues"];
             let f: Vec<(&str, String)> =
                 claves.iter().filter_map(|&k| bandera(resto, &format!("--{k}")).map(|v| (k, v))).collect();
-            imprimir(&Cliente::nuevo().consultar(&f)?, false);
-            Ok(0)
+            consultar_e_imprimir(&f)
         }
         Some("cadena") => {
             let id = resto.first().ok_or("uso: ev cadena <id>")?;
@@ -151,6 +152,46 @@ fn posicionales(args: &[String]) -> Vec<String> {
         }
     }
     salida
+}
+
+/// Tope de eventos de una consulta, como lo aplica el almacén: `limite` (100 si no se da) entre 1 y 1000.
+const TOPE_POR_DEFECTO: usize = 100;
+const TOPE_MAXIMO: usize = 1000;
+
+/// `ev ver` y `ev buscar`: imprime lo que devuelve el bus y, si llega al tope, avisa por stderr de que puede haber
+/// más y del `--despues` con el que seguir. La salida estándar es la de siempre.
+fn consultar_e_imprimir(f: &[(&str, String)]) -> Resultado<i32> {
+    let eventos = Cliente::nuevo().consultar(f)?;
+    imprimir(&eventos, false);
+    let valor = |clave: &str| f.iter().find(|(k, _)| *k == clave).map(|(_, v)| v.as_str());
+    if let Some(aviso) = aviso_de_tope(&eventos, valor("limite"), valor("despues").is_some()) {
+        eprintln!("{aviso}");
+    }
+    Ok(0)
+}
+
+/// El aviso de una línea cuando la consulta devuelve tantos eventos como su tope efectivo; `None` si devuelve menos.
+fn aviso_de_tope(eventos: &[Evento], limite: Option<&str>, con_despues: bool) -> Option<String> {
+    let tope = limite
+        .and_then(|l| l.parse::<i64>().ok())
+        .map_or(TOPE_POR_DEFECTO, |l| usize::try_from(l.max(1)).unwrap_or(TOPE_MAXIMO))
+        .min(TOPE_MAXIMO);
+    if eventos.len() < tope {
+        return None;
+    }
+    let (primero, ultimo) = (eventos.first()?.seq, eventos.last()?.seq);
+    Some(if con_despues {
+        format!(
+            "ev: {} eventos, el tope de la consulta (seq {primero}-{ultimo}); puede haber más: sigue con --despues {ultimo}",
+            eventos.len()
+        )
+    } else {
+        format!(
+            "ev: {} eventos, el tope de la consulta: son los últimos (seq {primero}-{ultimo}) y puede haber más anteriores; \
+             para recorrerlos todos, empieza con --despues 0 y sigue con el seq que diga este aviso",
+            eventos.len()
+        )
+    })
 }
 
 /// Una línea por evento: hora, tipo, fuente, profundidad y cuerpo recortado. En las cadenas, sangrado por profundidad.

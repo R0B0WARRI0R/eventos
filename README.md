@@ -46,7 +46,7 @@ ev servir --reglas D:\dev\eventos\reglas.toml
 | Orden | Qué hace |
 |---|---|
 | `ev run -- cargo test` | Lanza la orden. La salida se ve igual que siempre y cada línea, el inicio y el final (con su código) se guardan como eventos. |
-| `ev ver --tipo proceso.fin --limite 20` | Consulta por tipo, fuente (prefijo), correlación, causa, desde y hasta. |
+| `ev ver --tipo proceso.fin --limite 20` | Consulta por tipo, fuente (prefijo), correlación, causa, desde y hasta. Da los últimos 100 (o `--limite`, como mucho 1000); con `--despues SEQ`, los primeros tras ese seq. Si llega al tope, avisa por stderr del `--despues` con el que seguir. |
 | `ev buscar media notas` | Búsqueda de texto completo en tipo, fuente y cuerpo. |
 | `ev cadena <id>` | Árbol causal de un evento: qué lo provocó y todo lo que provocó él. |
 | `ev seguir` | Muestra los eventos según llegan. |
