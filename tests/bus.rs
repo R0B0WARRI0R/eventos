@@ -230,7 +230,7 @@ fn el_mcp_publica_en_la_cadena_de_su_agente_y_busca() {
 
     let ids: Vec<i64> = respuestas.iter().map(|r| r["id"].as_i64().unwrap_or(0)).collect();
     assert_eq!(ids, [1, 2, 3, 4, 5], "la notificación no lleva respuesta");
-    assert_eq!(respuestas[0]["result"]["serverInfo"]["name"], "eventos");
+    assert_eq!(respuestas[0]["result"]["serverInfo"]["name"], "pulso");
     assert_eq!(respuestas[0]["result"]["protocolVersion"], "2025-06-18");
     let nombres: Vec<&str> = respuestas[1]["result"]["tools"].as_array().expect("tools").iter().filter_map(|t| t["name"].as_str()).collect();
     assert_eq!(nombres, ["publicar", "buscar", "esperar"], "un agente de una regla no se suscribe");
@@ -415,6 +415,12 @@ fn una_sesion_se_suscribe_y_el_bus_le_avisa_por_el_canal_solo_de_lo_que_pidio() 
     let lista = s.pedir("tools/list", json!({}), &mut avisos);
     let nombres: Vec<&str> = lista["result"]["tools"].as_array().expect("tools").iter().filter_map(|t| t["name"].as_str()).collect();
     assert_eq!(nombres, ["publicar", "buscar", "esperar", "suscribir", "suscripciones", "desuscribir"]);
+    // Lo suyo no le avisa (más abajo): la descripción tiene que decirlo, o una prueba con `publicar` parece un canal
+    // roto (pasó el 2026-10-31), y decir cómo probarla desde fuera.
+    let herramientas = lista["result"]["tools"].as_array().expect("tools");
+    let descripcion = herramientas.iter().find(|t| t["name"] == "suscribir").expect("suscribir")["description"].as_str().expect("descripción");
+    assert!(descripcion.contains("lo que publicas tú") && descripcion.contains("de tu propia sesión"), "{descripcion}");
+    assert!(descripcion.contains("ev publicar"), "{descripcion}");
 
     let sin_filtro = s.llamar("suscribir", json!({ "motivo": "todo", "tipo": "*" }), &mut avisos);
     assert_eq!(sin_filtro["isError"], true, "suscribirse a todo no vale: {sin_filtro}");
@@ -668,7 +674,7 @@ fn el_visor_se_sirve_desde_el_bus_y_el_estado_trae_las_reglas() {
         let r = ureq::get(&d.url(ruta)).call().expect("visor");
         assert_eq!(r.content_type(), "text/html");
         let html = r.into_string().expect("html");
-        assert!(html.contains("<title>Visor del bus</title>"));
+        assert!(html.contains("<title>Pulso</title>"));
         // La página habla con las rutas que sirve el bus.
         for api in ["/esperar?despues=", "/estado", "/cadena/", "/eventos?despues=", "\"/pausa\"", "\"/reanudar\""] {
             assert!(html.contains(api), "el visor no usa {api}");
@@ -720,7 +726,7 @@ fn el_arnes_claude_lanza_de_solo_lectura_con_el_evento_como_dato_y_recoge_su_sal
 
     let args = std::fs::read_to_string(dir.join("args.txt")).expect("argumentos del claude falso");
     for imprescindible in ["-p", "--restricted", "--strict-mcp-config", "--mcp-config", "--model sonnet",
-        "mcp__eventos__publicar,mcp__eventos__buscar,mcp__eventos__esperar", "Edit,Write"] {
+        "mcp__pulso__publicar,mcp__pulso__buscar,mcp__pulso__esperar", "Edit,Write"] {
         assert!(args.contains(imprescindible), "falta {imprescindible} en: {args}");
     }
     let encargo = std::fs::read_to_string(dir.join("encargo.txt")).expect("encargo");
@@ -797,13 +803,13 @@ fn nada_del_evento_sale_de_sus_etiquetas_ni_el_agente_lleva_permisos_peligrosos(
     // Al lanzar un .cmd, Rust entrecomilla los argumentos con comas (para cmd la coma separa): se quitan las comillas.
     let tokens: Vec<&str> = args.split_whitespace().map(|t| t.trim_matches('"')).collect();
     let valor = |opcion: &str| tokens.iter().position(|t| *t == opcion).and_then(|i| tokens.get(i + 1)).copied();
-    assert_eq!(valor("--allowedTools"), Some("mcp__eventos__publicar,mcp__eventos__buscar,mcp__eventos__esperar"), "{args}");
+    assert_eq!(valor("--allowedTools"), Some("mcp__pulso__publicar,mcp__pulso__buscar,mcp__pulso__esperar"), "{args}");
     assert_eq!(valor("--disallowedTools"), Some("Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch"), "{args}");
     assert_eq!(tokens.iter().filter(|t| **t == "--allowedTools").count(), 1, "{args}");
     assert!(tokens.contains(&"--restricted") && tokens.contains(&"--strict-mcp-config"), "{args}");
     let copia: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("mcp-copia.json")).expect("config MCP")).expect("JSON");
-    let mcp = &copia["mcpServers"]["eventos"];
+    let mcp = &copia["mcpServers"]["pulso"];
     assert_eq!(mcp["args"], json!(["mcp"]));
     assert!(Path::new(mcp["command"].as_str().expect("orden")).exists());
     let env = &mcp["env"];

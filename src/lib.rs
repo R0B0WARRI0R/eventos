@@ -1,4 +1,4 @@
-//! Bus de eventos universal (v0). Diseño en `docs/2026-10-29-investigacion.md`, apartados 7 a 9.
+//! Pulso, el bus de eventos universal (v0). Diseño en `docs/2026-10-29-investigacion.md`, apartados 7 a 9.
 //!
 //! Un solo servicio (`ev servir`) es dueño del almacén SQLite; todo lo demás (`ev run`, `ev hook`, `ev mcp`, la CLI)
 //! le habla por HTTP en 127.0.0.1. Las reglas despiertan agentes y lo que hacen vuelve al bus como eventos.

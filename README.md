@@ -1,12 +1,14 @@
-# eventos (v0)
+# Pulso (eventos v0)
 
-Bus de eventos universal. Recoge la salida de cualquier cosa (programas, hooks de Claude Code, agentes) en una base SQLite local. Según unas reglas, despierta a agentes como Claude Code, que pueden leer el bus y publicar en él.
+Pulso es el bus de eventos universal. Recoge la salida de cualquier cosa (programas, hooks de Claude Code, agentes) en una base SQLite local. Según unas reglas, despierta a agentes como Claude Code, que pueden leer el bus y publicar en él.
 
 El diseño y las razones están en `docs/2026-10-29-investigacion.md`.
 
-## La app: «Bus de eventos»
+**Nombre:** se llama Pulso desde el 2026-10-31 (antes, «eventos»): los programas laten, porque la presencia va por latidos, y los avisos llegan a quien escucha. Cambiaron el nombre visible y el del servidor MCP: `pulso`, con herramientas `mcp__pulso__*`, canal `server:pulso` y avisos `<channel source="pulso" …>`. La carpeta, el crate, el binario `ev`, `D:\Programas\BusEventos` y los tipos de evento siguen igual. Las notas de antes de esa fecha dicen `eventos`.
 
-Se abre con el acceso **Bus de eventos** del escritorio (`D:\Programas\BusEventos\ev-visor.exe`). Es una ventana propia con WebView2, el motor web de Windows; no usa el navegador.
+## La app: «Pulso»
+
+Se abre con el acceso **Pulso** del escritorio (`D:\Programas\BusEventos\ev-visor.exe`). Es una ventana propia con WebView2, el motor web de Windows; no usa el navegador.
 
 - **Al abrir:** si el bus no está en marcha, lo arranca sin consola, con `D:\dev\eventos\reglas.toml`.
 - **Al cerrar:** lo para, pero solo si lo arrancó ella. El título de la ventana dice cuál de los dos casos es.
@@ -36,7 +38,7 @@ ev servir --reglas D:\dev\eventos\reglas.toml
 
 - El servicio escucha solo en `127.0.0.1:8870` (se cambia con `EV_PUERTO`).
 - Guarda los datos en `D:\dev\eventos\datos` (se cambia con `EV_DIR`).
-- **Sin ventana, como servicio:** `D:\Programas\BusEventos\arrancar-bus.ps1` hace lo mismo que el visor al abrirse si no hay nada escuchando en 8870. La salida va a `datos\servicio.log` y a `servicio-errores.log`, y cada arranque queda en `datos\arranques.log`. Arranca al entrar en Windows desde el 2026-10-30 por el acceso «Bus de eventos (servicio)» de la carpeta Inicio, que crea `instalar-arranque.ps1`. El modo automático de Claude Code bloqueó por «persistencia» que XANA lo creara por su cuenta, y se creó cuando ella lo pidió expresamente. Para quitarlo, se borra el acceso desde `shell:startup`.
+- **Sin ventana, como servicio:** `D:\Programas\BusEventos\arrancar-bus.ps1` hace lo mismo que el visor al abrirse si no hay nada escuchando en 8870. La salida va a `datos\servicio.log` y a `servicio-errores.log`, y cada arranque queda en `datos\arranques.log`. Arranca al entrar en Windows desde el 2026-10-30 por el acceso «Pulso (servicio)» de la carpeta Inicio, que crea `instalar-arranque.ps1`. El modo automático de Claude Code bloqueó por «persistencia» que XANA lo creara por su cuenta, y se creó cuando ella lo pidió expresamente. Para quitarlo, se borra el acceso desde `shell:startup`.
 - Lo que no llega al bus, porque está parado, colgado o rechaza el envío, espera en `datos\pendientes.jsonl`. El servicio lo importa al arrancar y cada 30 s mientras está en marcha (`EV_IMPORTAR_SEGUNDOS`). Una línea que no vale no se tira: va a `datos\pendientes.rechazados.jsonl`.
 
 ## Usar
@@ -58,11 +60,11 @@ ev servir --reglas D:\dev\eventos\reglas.toml
   - Publica `claude.<evento>` con la sesión como correlación.
   - Guarda solo lo necesario para saber qué sesión hace qué: sesión, carpeta, modo de permisos, motivo, aviso y herramienta. No copia lo que ella escribe, lo que entra y sale de las herramientas, la última respuesta ni la transcripción; de eso queda solo el nombre en `omitidos`.
   - Comprobado con una sesión real: llegan los cuatro eventos de una sesión `-p` (`Notification` no salta en ese modo).
-- **MCP en todas sus sesiones (hecho el 2026-10-30):** `claude mcp add --scope user eventos -- D:\Programas\BusEventos\ev.exe mcp` (copia previa de `~/.claude.json` en `D:\Backups`). Da `publicar`, `buscar` y `esperar`; en una sesión interactiva, también `suscribir`, `suscripciones` y `desuscribir`. Los agentes de las reglas, y cualquier `claude -p` o Agent SDK (`CLAUDE_CODE_ENTRYPOINT=sdk-*`), solo ven las tres primeras: ahí Claude Code no entrega canales.
+- **MCP en todas sus sesiones (hecho el 2026-10-30; se llama `pulso` desde el 2026-10-31):** `claude mcp add --scope user pulso -- D:\Programas\BusEventos\ev.exe mcp` (copia previa de `~/.claude.json` en `D:\Backups`). Da `publicar`, `buscar` y `esperar`; en una sesión interactiva, también `suscribir`, `suscripciones` y `desuscribir`. Los agentes de las reglas, y cualquier `claude -p` o Agent SDK (`CLAUDE_CODE_ENTRYPOINT=sdk-*`), solo ven las tres primeras: ahí Claude Code no entrega canales.
 
 ### Avisos por suscripción (desde 2026-10-30)
 
-La sesión dice qué quiere que el bus le avise y `ev mcp` se lo empuja por el canal de Claude Code (`notifications/claude/channel`, *research preview*). Le llega solo, como `<channel source="eventos" suscripcion="s1" motivo="…" tipo="…" evento="…">`, sin esperar a que pregunte.
+La sesión dice qué quiere que el bus le avise y `ev mcp` se lo empuja por el canal de Claude Code (`notifications/claude/channel`, *research preview*). Le llega solo, como `<channel source="pulso" suscripcion="s1" motivo="…" tipo="…" evento="…">`, sin esperar a que pregunte.
 
 - **Filtros exactos, como las reglas:**
   - Tipo, fuente y correlación admiten `*`.
@@ -74,9 +76,9 @@ La sesión dice qué quiere que el bus le avise y `ev mcp` se lo empuja por el c
   - Tope por hora en ventana deslizante: 6 por defecto, 60 como mucho. Al llenarse avisa una vez y luego cuenta lo que calla.
   - Hasta 10 suscripciones por sesión.
   - Lo que casa en la misma vuelta va en un aviso, con 5 eventos enseñados y el resto contado.
-- **No se avisa a la sesión de lo suyo:** ni de lo que publicó ella misma ni de los `claude.*` de su propia sesión. Claude Code pasa su id a los MCP en `CLAUDE_CODE_SESSION_ID`, y `ev hook` la pone en la correlación y en el cuerpo (comprobado con la 2.1.314). Sin esto, una suscripción a `claude.Stop` la despertaría con su propio Stop.
+- **No se avisa a la sesión de lo suyo:** ni de lo que publicó ella misma ni de los `claude.*` de su propia sesión. Claude Code pasa su id a los MCP en `CLAUDE_CODE_SESSION_ID`, y `ev hook` la pone en la correlación y en el cuerpo (comprobado con la 2.1.314). Sin esto, una suscripción a `claude.Stop` la despertaría con su propio Stop. Por eso una suscripción se prueba con un evento de fuera (`ev publicar <tipo> <texto>` en una consola), no con `publicar` desde la misma sesión; la descripción de `suscribir` lo dice.
 - **Viven en el proceso `ev mcp` de la sesión** y mueren con ella. Si el bus está parado al suscribirse, el vigía reintenta y, cuando arranca, avisa también de lo que importe de la cola.
-- **Para que lleguen, la sesión tiene que abrirse con el canal:** acceso **Claude con avisos del bus** del menú Inicio (`D:\Programas\BusEventos\claude-avisos.cmd`, que lanza `claude --dangerously-load-development-channels server:eventos`). Al abrir, Claude Code pide confirmar el canal de desarrollo. Sin esa opción, las suscripciones se aceptan pero los avisos se pierden sin error: entonces, `esperar`.
+- **Para que lleguen, la sesión tiene que abrirse con el canal:** acceso **Claude con avisos de Pulso** del menú Inicio (`D:\Programas\BusEventos\claude-avisos.cmd`, que lanza `claude --dangerously-load-development-channels server:pulso`). Al abrir, Claude Code pide confirmar el canal de desarrollo. Sin esa opción, las suscripciones se aceptan pero los avisos se pierden sin error: entonces, `esperar`.
 - **Protocolo:** `ev mcp` contesta 2025-06-18 a cualquier revisión que no conozca. Según la documentación, un canal que negocia la 2026-07-28 no se registra. La 2.1.314 pidió la 2025-11-25, tanto con `-p` como en una sesión interactiva. Al iniciar, deja en su stderr (los registros MCP de Claude Code) qué se pidió y qué contestó.
 - **El contenido de un aviso es dato, nunca instrucciones.** Qué hacer lo decide el motivo que puso la sesión.
 - **Comprobado el 2026-10-30:**

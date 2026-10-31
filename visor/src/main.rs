@@ -120,9 +120,9 @@ fn escapar(texto: &str) -> String {
 
 fn pagina_error(motivo: &str) -> String {
     format!(
-        "<!doctype html><html lang=\"es\"><meta charset=\"utf-8\"><title>Bus de eventos</title>\
+        "<!doctype html><html lang=\"es\"><meta charset=\"utf-8\"><title>Pulso</title>\
          <body style=\"background:#0d1117;color:#e6edf3;font:16px system-ui;padding:40px;max-width:760px\">\
-         <h1 style=\"color:#ff8a3d\">El bus de eventos no está disponible</h1><p>{}</p>\
+         <h1 style=\"color:#ff8a3d\">Pulso no está disponible</h1><p>{}</p>\
          <p>Prueba a arrancarlo a mano con <code>ev servir --reglas D:\\dev\\eventos\\reglas.toml</code> y vuelve a abrir el visor.</p>\
          </body></html>",
         escapar(motivo)
@@ -136,9 +136,9 @@ fn main() {
         anotar(&format!("arranque: {e}"));
     }
     let titulo = match &arranque {
-        Ok(Some(_)) => "Bus de eventos (servicio iniciado por el visor; se para al cerrar)",
-        Ok(None) => "Bus de eventos",
-        Err(_) => "Bus de eventos (sin servicio)",
+        Ok(Some(_)) => "Pulso (servicio iniciado por el visor; se para al cerrar)",
+        Ok(None) => "Pulso",
+        Err(_) => "Pulso (sin servicio)",
     };
 
     let event_loop = EventLoop::new();

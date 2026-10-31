@@ -5,7 +5,7 @@ use eventos::texto::recortar;
 use eventos::{carpeta_datos, enganchar, hook, mcp, puerto, run, Resultado};
 use serde_json::Value;
 
-const AYUDA: &str = "ev — bus de eventos universal (v0)
+const AYUDA: &str = "ev — Pulso, el bus de eventos universal (v0)
 
   ev servir [--puerto N] [--reglas F] [--carpeta D]   arranca el servicio (127.0.0.1:8870 por defecto)
   ev run -- <orden> [args...]       lanza la orden y guarda cada línea, el inicio y el final como eventos
