@@ -1,5 +1,6 @@
 use crate::cliente::Cliente;
 use crate::evento::{ahora, Evento};
+use crate::presencia::ATRIBUTO_CLAUDE;
 use crate::texto::recortar;
 use serde_json::{json, Map, Value};
 use std::io::{self, Read};
@@ -121,10 +122,13 @@ pub fn recibir() -> i32 {
     }
     let nombre = carga.get("hook_event_name").and_then(Value::as_str).unwrap_or("hook").to_string();
     let sesion = carga.get("session_id").and_then(Value::as_str).map(str::to_string);
+    // Qué `claude.exe` lo lanzó: la sesión cambia con un `/clear`, el proceso no (ver `ATRIBUTO_CLAUDE`).
+    let claude_pid = std::env::var("CLAUDE_PID").ok().and_then(|p| p.trim().parse::<u64>().ok());
     let e = Evento {
         fuente: format!("hook:claude/{}", sesion.as_deref().unwrap_or("?")),
         tipo: format!("claude.{nombre}"),
         cuerpo: lo_necesario(carga),
+        atributos: claude_pid.map_or(Value::Null, |p| json!({ ATRIBUTO_CLAUDE: p })),
         correlacion: sesion,
         t_evento: Some(ahora()),
         confianza: Some("local".into()),

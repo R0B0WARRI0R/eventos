@@ -1,7 +1,7 @@
 use crate::almacen::{Almacen, Filtro};
 use crate::arneses::{self, Bus};
 use crate::evento::{ahora, Evento};
-use crate::presencia::{Latido, Registro};
+use crate::presencia::{Latido, Registro, ATRIBUTO_CLAUDE};
 use crate::reglas::{self, Fichero, Motor, Regla, Salida, Veredicto};
 use crate::tareas;
 use crate::texto::redactar_evento;
@@ -77,8 +77,21 @@ impl Nucleo {
             *ultimo = (*ultimo).max(e.seq);
             self.aviso.notify_all();
         }
+        self.anotar_sesion(&e);
         self.disparar(&e);
         Ok(e.id)
+    }
+
+    /// El hook dice qué `claude.exe` lo lanzó y qué sesión lleva: así `/conectados` sigue a la sesión tras un `/clear`.
+    /// El final de una sesión no cuenta: cada hook va por su lado y puede llegar después del inicio de la siguiente.
+    fn anotar_sesion(&self, e: &Evento) {
+        if !e.tipo.starts_with("claude.") || e.tipo == "claude.SessionEnd" {
+            return;
+        }
+        let claude_pid = e.atributo(ATRIBUTO_CLAUDE).and_then(Value::as_u64);
+        if let (Some(pid), Some(sesion)) = (claude_pid, &e.correlacion) {
+            self.presencia.lock().expect("presencia").sesion_actual(pid, sesion.clone());
+        }
     }
 
     fn disparar(self: &Arc<Self>, e: &Evento) {

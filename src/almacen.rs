@@ -17,9 +17,11 @@ pub const LIMITE_MAXIMO: usize = 1000;
 #[derive(Debug, Default, Clone)]
 pub struct Filtro {
     pub texto: Option<String>,
+    /// Exacto, o patrón si lleva `*`.
     pub tipo: Option<String>,
-    /// Prefijo de la fuente.
+    /// Prefijo de la fuente, o patrón si lleva `*`.
     pub fuente: Option<String>,
+    /// Exacta, o patrón si lleva `*`.
     pub correlacion: Option<String>,
     pub causa: Option<String>,
     pub desde: Option<String>,
@@ -96,16 +98,30 @@ impl Almacen {
             condiciones += " AND seq IN (SELECT rowid FROM eventos_fts WHERE eventos_fts MATCH ?)";
             args.push(Box::new(consulta_fts(t)));
         }
-        for (columna, valor) in [("tipo", &f.tipo), ("correlacion", &f.correlacion), ("causa", &f.causa)] {
+        for (columna, valor) in [("tipo", &f.tipo), ("correlacion", &f.correlacion)] {
             if let Some(v) = valor {
-                condiciones += &format!(" AND {columna} = ?");
-                args.push(Box::new(v.clone()));
+                if v.contains('*') {
+                    condiciones += &format!(" AND {columna} GLOB ?");
+                    args.push(Box::new(a_glob(v)));
+                } else {
+                    condiciones += &format!(" AND {columna} = ?");
+                    args.push(Box::new(v.clone()));
+                }
             }
         }
+        if let Some(c) = &f.causa {
+            condiciones += " AND causa = ?";
+            args.push(Box::new(c.clone()));
+        }
         if let Some(p) = &f.fuente {
-            condiciones += " AND substr(fuente, 1, length(?)) = ?";
-            args.push(Box::new(p.clone()));
-            args.push(Box::new(p.clone()));
+            if p.contains('*') {
+                condiciones += " AND fuente GLOB ?";
+                args.push(Box::new(a_glob(p)));
+            } else {
+                condiciones += " AND substr(fuente, 1, length(?)) = ?";
+                args.push(Box::new(p.clone()));
+                args.push(Box::new(p.clone()));
+            }
         }
         if let Some(d) = &f.desde {
             condiciones += " AND t_visto >= ?";
@@ -172,6 +188,12 @@ impl Almacen {
     pub fn ultimo_seq(&self) -> rusqlite::Result<i64> {
         self.con.query_row("SELECT coalesce(max(seq), 0) FROM eventos", [], |r| r.get(0))
     }
+}
+
+/// Un patrón como los de `suscribir`, donde solo `*` es especial (`reglas::comodin`), para el GLOB de SQLite: `?` y `[`
+/// dejan de ser sintaxis. GLOB distingue mayúsculas, igual que `comodin`.
+fn a_glob(patron: &str) -> String {
+    patron.replace('[', "[[]").replace('?', "[?]")
 }
 
 /// Cada palabra como frase literal de FTS5: así los guiones, puntos o comillas del texto no son sintaxis.

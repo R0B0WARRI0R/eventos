@@ -17,6 +17,48 @@ pub const MAXIMO: usize = 256;
 const LARGO_ID: usize = 64;
 const LARGO_TEXTO: usize = 300;
 
+/// Atributo con el que `ev hook` dice qué `claude.exe` lo lanzó (desde 2026-11-01). `/clear` cambia la sesión sin
+/// reiniciar `ev mcp`, que se queda con el CLAUDE_CODE_SESSION_ID de su arranque; el proceso no cambia. Claude Code da su
+/// pid a los hooks en CLAUDE_PID, pero no a los MCP (comprobado con la 2.1.316): `ev mcp` usa el de su padre.
+pub const ATRIBUTO_CLAUDE: &str = "claude_pid";
+
+/// El pid del proceso padre: en una sesión, el `claude.exe` que lanzó este `ev mcp`.
+#[cfg(windows)]
+pub fn pid_del_padre() -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    let yo = std::process::id();
+    // SAFETY: la foto es un handle propio que se cierra al acabar, y la estructura va a cero con su tamaño puesto, que
+    // es lo que piden Process32FirstW y Process32NextW.
+    unsafe {
+        let foto = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if foto == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut proceso: PROCESSENTRY32W = std::mem::zeroed();
+        proceso.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut padre = None;
+        let mut hay = Process32FirstW(foto, &mut proceso) != 0;
+        while hay {
+            if proceso.th32ProcessID == yo {
+                padre = Some(u64::from(proceso.th32ParentProcessID));
+                break;
+            }
+            hay = Process32NextW(foto, &mut proceso) != 0;
+        }
+        CloseHandle(foto);
+        padre
+    }
+}
+
+/// El pid del proceso padre: en una sesión, el `claude` que lanzó este `ev mcp`.
+#[cfg(unix)]
+pub fn pid_del_padre() -> Option<u64> {
+    Some(u64::from(std::os::unix::process::parent_id()))
+}
+
 /// Lo que dice un `ev mcp` de sí mismo en cada latido.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Latido {
@@ -24,8 +66,10 @@ pub struct Latido {
     /// `sesion` (Claude Code interactivo, con canal) o `agente` (una regla del bus, `claude -p`, Agent SDK).
     pub clase: String,
     pub pid: Option<u64>,
-    /// La sesión de Claude Code (`CLAUDE_CODE_SESSION_ID`), si la hay.
+    /// La sesión de Claude Code (`CLAUDE_CODE_SESSION_ID`), si la hay: la de su arranque, aunque luego haya un `/clear`.
     pub sesion: Option<String>,
+    /// El proceso padre de este `ev mcp`, si se pudo saber (ver `ATRIBUTO_CLAUDE`).
+    pub claude_pid: Option<u64>,
     /// La regla que lanzó al agente (`EV_REGLA`), si la hay.
     pub regla: Option<String>,
     /// El cliente MCP que se presentó en `initialize` (p. ej. `claude-code 2.1.316`).
@@ -57,6 +101,7 @@ impl Latido {
             clase: clase.into(),
             pid: v["pid"].as_u64(),
             sesion: texto(v, "sesion"),
+            claude_pid: v["claude_pid"].as_u64(),
             regla: texto(v, "regla"),
             cliente: texto(v, "cliente"),
             directorio: texto(v, "directorio"),
@@ -81,9 +126,20 @@ impl Entrada {
 #[derive(Default)]
 pub struct Registro {
     vivos: HashMap<String, Entrada>,
+    /// La última sesión que el hook de cada `claude.exe` ha dicho que lleva.
+    sesiones: HashMap<u64, String>,
 }
 
 impl Registro {
+    /// Anota la sesión que lleva un `claude.exe`, según su hook. Si no cabe otro, se olvidan todos: cada uno vuelve con
+    /// su siguiente hook, y mientras tanto `lista` da la sesión del arranque de su `ev mcp`.
+    pub fn sesion_actual(&mut self, claude_pid: u64, sesion: String) {
+        if self.sesiones.len() >= MAXIMO && !self.sesiones.contains_key(&claude_pid) {
+            self.sesiones.clear();
+        }
+        self.sesiones.insert(claude_pid, sesion);
+    }
+
     /// Anota un latido; `desde` es la hora UTC de ahora, que solo se guarda en el primero.
     pub fn latir(&mut self, l: Latido, desde: String, ahora: Instant) -> Result<(), String> {
         self.purgar(ahora);
@@ -117,8 +173,9 @@ impl Registro {
             .into_iter()
             .map(|e| {
                 let l = &e.latido;
+                let sesion = l.claude_pid.and_then(|p| self.sesiones.get(&p)).or(l.sesion.as_ref());
                 json!({
-                    "id": l.id, "clase": l.clase, "pid": l.pid, "sesion": l.sesion, "regla": l.regla,
+                    "id": l.id, "clase": l.clase, "pid": l.pid, "sesion": sesion, "claude_pid": l.claude_pid, "regla": l.regla,
                     "cliente": l.cliente, "directorio": l.directorio, "desde": e.desde,
                     "ultimo_latido_hace_s": ahora.saturating_duration_since(e.visto).as_secs(), "periodo": l.periodo,
                 })

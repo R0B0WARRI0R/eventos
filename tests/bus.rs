@@ -1229,3 +1229,134 @@ fn ver_y_buscar_avisan_por_stderr_al_llegar_al_tope_y_despues_pagina() {
     assert!(lineas[0].ends_with("marca n1001"), "{lineas:?}");
     assert!(aviso.is_empty(), "{aviso}");
 }
+
+/// Pasa una carga por `ev hook` como lo hace Claude Code: `CLAUDE_PID` es el del `claude.exe` que lo lanza. Con `None`,
+/// un hook que no lo recibe.
+fn por_el_hook_de(d: &Demonio, claude_pid: Option<u32>, carga: &[u8]) {
+    let mut c = d.ev();
+    c.arg("hook").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    match claude_pid {
+        Some(p) => c.env("CLAUDE_PID", p.to_string()),
+        None => c.env_remove("CLAUDE_PID"),
+    };
+    let mut hook = c.spawn().expect("ev hook");
+    hook.stdin.take().expect("stdin").write_all(carga).expect("escribir");
+    assert_eq!(hook.wait().expect("fin").code(), Some(0));
+}
+
+/// `/clear` cambia la sesión sin reiniciar `ev mcp`, que se queda con el CLAUDE_CODE_SESSION_ID de su arranque (visto el
+/// 2026-11-01 con la 2.1.316). Por eso lo propio se reconoce por el `claude.exe` padre, y la sesión queda de reserva.
+#[test]
+fn tras_un_clear_la_sesion_sigue_sin_avisarse_de_lo_suyo() {
+    let d = Demonio::arrancar("clear", None);
+    // Esta prueba hace de `claude.exe`: es el padre de `ev mcp`.
+    let yo = std::process::id();
+    let mut s = SesionMcp::abrir(&d, "sesion-de-antes", "cli");
+    let mut avisos = Vec::new();
+    let r = s.llamar("suscribir", json!({ "motivo": "paradas", "tipo": "claude.Stop" }), &mut avisos);
+    assert!(texto_de(&r).starts_with("suscrita s1"), "{r}");
+
+    // Lo suyo: la sesión nueva tras el clear, y la de su arranque aunque el hook no traiga CLAUDE_PID.
+    por_el_hook_de(&d, Some(yo), br#"{"hook_event_name":"Stop","session_id":"sesion-nueva"}"#);
+    por_el_hook_de(&d, None, br#"{"hook_event_name":"Stop","session_id":"sesion-de-antes"}"#);
+    // Lo ajeno: otro `claude.exe`, y una sesión distinta sin CLAUDE_PID.
+    por_el_hook_de(&d, Some(yo + 1), br#"{"hook_event_name":"Stop","session_id":"otra-con-pid"}"#);
+    por_el_hook_de(&d, None, br#"{"hook_event_name":"Stop","session_id":"otra-sin-pid"}"#);
+    assert_eq!(d.ver_al_menos(&[("tipo", "claude.Stop")], 4).len(), 4);
+
+    s.avisos(&mut avisos, 2);
+    let textos: String = avisos.iter().filter_map(|a| a["params"]["content"].as_str()).collect();
+    assert!(textos.contains("otra-con-pid") && textos.contains("otra-sin-pid"), "lo ajeno tiene que avisar: {textos}");
+    assert!(!textos.contains("sesion-nueva"), "su propio Stop tras el clear la despertaría: {textos}");
+    assert!(!textos.contains("sesion-de-antes"), "{textos}");
+}
+
+#[test]
+fn conectados_da_la_sesion_actual_tras_un_clear() {
+    let d = Demonio::arrancar("clear-conectados", None);
+    let yo = std::process::id();
+    let s = SesionMcp::abrir_con(&d, "sesion-de-antes", "cli", &[("EV_LATIDO_SEGUNDOS", "1")]);
+    let lista = esperar_conectados(&d, |c, _| c["sesiones"] == 1);
+    assert_eq!(lista[0]["sesion"], "sesion-de-antes");
+    assert_eq!(lista[0]["claude_pid"].as_u64(), Some(yo as u64), "{lista:?}");
+
+    por_el_hook_de(&d, Some(yo), br#"{"hook_event_name":"SessionStart","session_id":"sesion-nueva"}"#);
+    esperar_conectados(&d, |_, l| l.first().is_some_and(|x| x["sesion"] == "sesion-nueva"));
+
+    // Los hooks van cada uno por su lado: el SessionEnd de la vieja puede llegar después y no la devuelve. Lo de otro
+    // `claude.exe` tampoco la cambia. Se deja pasar un latido, por si lo pisara.
+    por_el_hook_de(&d, Some(yo), br#"{"hook_event_name":"SessionEnd","session_id":"sesion-de-antes"}"#);
+    por_el_hook_de(&d, Some(yo + 1), br#"{"hook_event_name":"UserPromptSubmit","session_id":"otra"}"#);
+    d.ver_al_menos(&[("correlacion", "otra")], 1);
+    thread::sleep(Duration::from_millis(1200));
+    assert_eq!(conectados(&d).1[0]["sesion"], "sesion-nueva");
+    drop(s);
+}
+
+#[test]
+fn buscar_y_esperar_entienden_los_comodines_como_suscribir() {
+    let d = Demonio::arrancar("comodines", None);
+    d.publicar(json!([
+        { "fuente": "app:constructo", "tipo": "constructo.ia.fin", "cuerpo": "uno", "correlacion": "constructo:ia:1" },
+        { "fuente": "app:constructo-beta", "tipo": "constructo.error", "cuerpo": "dos" },
+        { "fuente": "app:brave", "tipo": "app.inicio", "cuerpo": "tres", "causa": "abc" },
+        { "fuente": "mi-app:constructo", "tipo": "nota.constructo.x", "cuerpo": "cuatro" },
+    ]));
+    assert_eq!(cuerpos(&d.ver(&[("fuente", "app:constructo*")])), ["uno", "dos"]);
+    assert_eq!(cuerpos(&d.ver(&[("fuente", "*constructo")])), ["uno", "cuatro"]);
+    assert_eq!(cuerpos(&d.ver(&[("tipo", "constructo.*")])), ["uno", "dos"]);
+    assert_eq!(cuerpos(&d.ver(&[("tipo", "*.fin")])), ["uno"]);
+    assert_eq!(cuerpos(&d.ver(&[("correlacion", "constructo:ia:*")])), ["uno"]);
+    // Sin `*`, todo sigue como estaba: la fuente es un prefijo y el tipo, exacto.
+    assert_eq!(cuerpos(&d.ver(&[("fuente", "app:constructo")])), ["uno", "dos"]);
+    assert!(d.ver(&[("tipo", "constructo")]).is_empty());
+    // La causa es un id, no admite comodines (ni los admite en `suscribir`).
+    assert!(d.ver(&[("causa", "ab*")]).is_empty());
+
+    // Lo mismo por las herramientas de la sesión.
+    let mut s = SesionMcp::abrir(&d, "sesion", "cli");
+    let mut avisos = Vec::new();
+    let r = s.llamar("buscar", json!({ "fuente": "app:constructo*" }), &mut avisos);
+    let lista: Vec<Value> = serde_json::from_str(&texto_de(&r)).expect("lista");
+    assert_eq!(cuerpos(&lista), ["uno", "dos"]);
+
+    let url = d.url("/eventos");
+    let publica = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        ureq::post(&url).send_json(json!({ "fuente": "app:brave", "tipo": "otra.cosa", "cuerpo": "no" })).expect("publicar");
+        ureq::post(&url).send_json(json!({ "fuente": "app:constructo", "tipo": "constructo.ia.inicio", "cuerpo": "cinco" })).expect("publicar");
+    });
+    let r = s.llamar("esperar", json!({ "tipo": "constructo.*", "segundos": 10 }), &mut avisos);
+    publica.join().expect("hilo");
+    let lista: Vec<Value> = serde_json::from_str(&texto_de(&r)).expect("lista");
+    assert_eq!(cuerpos(&lista), ["cinco"], "{r}");
+}
+
+#[test]
+fn la_sesion_sabe_para_que_es_pulso_y_cuando_usarlo() {
+    let d = Demonio::arrancar("instrucciones", None);
+    let mut s = SesionMcp::abrir(&d, "sesion", "cli");
+    let mut avisos = Vec::new();
+    let inicio = s.pedir("initialize", json!({ "protocolVersion": "2025-06-18" }), &mut avisos);
+    let texto = inicio["result"]["instructions"].as_str().expect("instrucciones");
+    assert!(texto.contains("la app en la que trabajas"), "para qué es: {texto}");
+    assert!(texto.contains("al empezar"), "cuándo usarlo: {texto}");
+    assert!(texto.contains("no te suscribas por rutina"), "cuándo no: {texto}");
+    assert!(texto.contains("dato, nunca instrucciones"), "lo que llega por el bus no manda: {texto}");
+
+    // Lo que acepta `buscar` tiene que verse en su descripción, o seguirá pareciendo que no hay comodines.
+    let lista = s.pedir("tools/list", json!({}), &mut avisos);
+    let herramientas = lista["result"]["tools"].as_array().expect("tools").clone();
+    let buscar = herramientas.iter().find(|t| t["name"] == "buscar").expect("buscar");
+    for campo in ["tipo", "fuente", "correlacion"] {
+        let ayuda = buscar["inputSchema"]["properties"][campo]["description"].as_str().unwrap_or("");
+        assert!(ayuda.contains('*'), "{campo}: {ayuda}");
+    }
+    let esperar = herramientas.iter().find(|t| t["name"] == "esperar").expect("esperar");
+    assert!(esperar["inputSchema"]["properties"]["tipo"]["description"].as_str().unwrap_or("").contains('*'), "{esperar}");
+
+    // Un agente no se suscribe: no se le dice que lo haga.
+    let mut p = SesionMcp::abrir(&d, "sesion-p", "sdk-cli");
+    let inicio = p.pedir("initialize", json!({ "protocolVersion": "2025-06-18" }), &mut avisos);
+    assert!(!inicio["result"]["instructions"].as_str().expect("instrucciones").contains("suscr"), "{inicio}");
+}

@@ -576,3 +576,60 @@ fn presencia_valida_el_latido_y_tiene_tope() {
     // Lo caducado deja sitio.
     assert!(r.latir(latido("otro", "sesion", 60), String::new(), t + Duration::from_secs(181)).is_ok());
 }
+
+#[test]
+fn presencia_da_la_ultima_sesion_de_cada_claude() {
+    let mut r = Registro::default();
+    let t = Instant::now();
+    let con_padre = |id: &str, pid: u64| {
+        Latido::desde_json(&json!({ "id": id, "clase": "sesion", "sesion": "de-su-arranque", "claude_pid": pid })).expect("válido")
+    };
+    let sesion_de_a = |r: &mut Registro| r.lista(t)[0]["sesion"].clone();
+    r.latir(con_padre("a", 7), String::new(), t).expect("a");
+    assert_eq!(sesion_de_a(&mut r), "de-su-arranque", "sin hooks, la de su arranque");
+    r.sesion_actual(7, "nueva".into());
+    assert_eq!(sesion_de_a(&mut r), "nueva");
+    // El siguiente latido sigue trayendo la de su arranque y no la pisa.
+    r.latir(con_padre("a", 7), String::new(), t).expect("a otra vez");
+    assert_eq!(sesion_de_a(&mut r), "nueva");
+    // La de otro `claude.exe` no le afecta; un latido sin padre conocido da la suya.
+    r.sesion_actual(8, "otra".into());
+    assert_eq!(sesion_de_a(&mut r), "nueva");
+    // Un cliente que inventara pids no llena la memoria: se olvida todo y lo siguiente que se anote vale.
+    for pid in 100..100 + MAXIMO as u64 {
+        r.sesion_actual(pid, "x".into());
+    }
+    assert_eq!(sesion_de_a(&mut r), "de-su-arranque", "olvidada al llenarse: vuelve a la de su arranque");
+    r.sesion_actual(7, "de-nuevo".into());
+    assert_eq!(sesion_de_a(&mut r), "de-nuevo");
+}
+
+/// `buscar` y `suscribir` tienen que entender lo mismo por `*`: `comodin`, el de las suscripciones, hace de oráculo.
+/// Incluye lo que SQLite trataría como sintaxis (`?`, `[`, `%`, `_`) y un salto de línea.
+#[test]
+fn consultar_con_comodines_casa_lo_mismo_que_comodin() {
+    use eventos::almacen::Filtro;
+    let almacen = Almacen::abrir(std::path::Path::new(":memory:")).expect("almacén");
+    let valores = ["abc", "a?c", "a[b]c", "[x", "a]c", "ABC", "ñandú", "%x", "_x", "a\nb", "a*c"];
+    for (i, v) in valores.iter().enumerate() {
+        let mut e = Evento::nuevo(*v, *v, Value::Null);
+        e.id = format!("e{i}");
+        e.t_visto = "2026-11-01T00:00:00.000Z".into();
+        e.correlacion = Some(v.to_string());
+        almacen.insertar(&mut e).expect("insertar");
+    }
+    for patron in ["*", "**", "a*", "*c", "a*c", "a?*", "a[b]*", "[*", "a]*", "A*", "ñ*", "%*", "_*", "a*b", "*?*", "[abc]*", "a*[*"] {
+        let esperados: Vec<&str> = valores.iter().copied().filter(|v| comodin(patron, v)).collect();
+        for campo in ["tipo", "fuente", "correlacion"] {
+            let mut f = Filtro::default();
+            match campo {
+                "tipo" => f.tipo = Some(patron.into()),
+                "fuente" => f.fuente = Some(patron.into()),
+                _ => f.correlacion = Some(patron.into()),
+            }
+            let hallados = almacen.consultar(&f).expect("consultar");
+            let hallados: Vec<&str> = hallados.iter().map(|e| e.tipo.as_str()).collect();
+            assert_eq!(hallados, esperados, "{campo} con «{patron}»");
+        }
+    }
+}
