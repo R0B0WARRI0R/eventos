@@ -163,9 +163,8 @@ fn posicionales(args: &[String]) -> Vec<String> {
     salida
 }
 
-/// Tope de eventos de una consulta, como lo aplica el almacén: `limite` (100 si no se da) entre 1 y 1000.
-const TOPE_POR_DEFECTO: usize = 100;
-const TOPE_MAXIMO: usize = 1000;
+/// Tope de eventos de una consulta: el mismo que aplica el almacén, para que el aviso no se desfase si cambia.
+use eventos::almacen::{LIMITE_MAXIMO as TOPE_MAXIMO, LIMITE_POR_DEFECTO as TOPE_POR_DEFECTO};
 
 /// `ev ver` y `ev buscar`: imprime lo que devuelve el bus y, si llega al tope, avisa por stderr de que puede haber
 /// más y del `--despues` con el que seguir. La salida estándar es la de siempre.
@@ -196,8 +195,9 @@ fn aviso_de_tope(eventos: &[Evento], limite: Option<&str>, con_despues: bool) ->
         )
     } else {
         format!(
-            "ev: {} eventos, el tope de la consulta: son los últimos (seq {primero}-{ultimo}) y puede haber más anteriores; \
-             para recorrerlos todos, empieza con --despues 0 y sigue con el seq que diga este aviso",
+            "ev: {} eventos, el tope de la consulta: son los más recientes (seq {primero}-{ultimo}) y puede haber más \
+             antiguos; para recorrerlos todos desde el principio, repite la consulta con --despues 0, y cada tanda que \
+             llegue al tope dirá con qué --despues seguir",
             eventos.len()
         )
     })

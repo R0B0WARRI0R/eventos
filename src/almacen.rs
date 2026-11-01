@@ -8,6 +8,11 @@ pub struct Almacen {
     con: Connection,
 }
 
+/// Eventos que da una consulta si no se pide `limite`.
+pub const LIMITE_POR_DEFECTO: usize = 100;
+/// Lo más que da una consulta, se pida lo que se pida (`ev ver` y `ev buscar` avisan al llegar aquí).
+pub const LIMITE_MAXIMO: usize = 1000;
+
 /// Filtro de consulta. Sin `despues`, devuelve los últimos `limite` eventos; con él, los primeros tras ese `seq`.
 #[derive(Debug, Default, Clone)]
 pub struct Filtro {
@@ -114,7 +119,7 @@ impl Almacen {
             condiciones += " AND seq > ?";
             args.push(Box::new(s));
         }
-        let limite = f.limite.unwrap_or(100).clamp(1, 1000) as i64;
+        let limite = f.limite.unwrap_or(LIMITE_POR_DEFECTO).clamp(1, LIMITE_MAXIMO) as i64;
         args.push(Box::new(limite));
         let sql = if f.despues.is_some() {
             format!("SELECT {COLUMNAS} FROM eventos WHERE 1=1{condiciones} ORDER BY seq ASC LIMIT ?")

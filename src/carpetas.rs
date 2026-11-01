@@ -98,8 +98,13 @@ impl Vigilada {
         !ignorado(&nombre.to_string_lossy(), &self.conf.ignorar)
     }
 
-    /// Un nombre que acaba de aparecer: empieza a esperar su antirrebote.
+    /// Un nombre que acaba de aparecer: empieza a esperar su antirrebote. Si es una subcarpeta de una carpeta
+    /// recursiva, lo que trae dentro.
     fn candidato(&mut self, p: &Path, ahora: Instant) {
+        if self.conf.recursiva && self.relativa(p).is_some_and(|r| r.components().count() > 0) && p.is_dir() {
+            self.subcarpeta(p, ahora);
+            return;
+        }
         if self.publicados.contains(p) || !self.en_alcance(p) {
             return;
         }
@@ -107,6 +112,36 @@ impl Vigilada {
             .entry(p.to_path_buf())
             .and_modify(|x| x.desde = ahora)
             .or_insert(Pendiente { bytes: None, desde: ahora });
+    }
+
+    /// Una subcarpeta que aparece ya llena (movida desde otro sitio o descomprimida de golpe): Windows avisa de ella
+    /// y no de lo que trae, así que se recorre y cada fichero espera su antirrebote como si acabara de llegar. Lo que
+    /// se escriba dentro después llega por sus propios avisos y no se repite. No se siguen los enlaces a carpetas, y
+    /// como mucho se toman `RECORDADOS` ficheros por subcarpeta.
+    fn subcarpeta(&mut self, dir: &Path, ahora: Instant) {
+        let mut pila = vec![dir.to_path_buf()];
+        let mut tomados = 0;
+        while let Some(d) = pila.pop() {
+            let Ok(entradas) = std::fs::read_dir(&d) else { continue };
+            for entrada in entradas.flatten() {
+                match entrada.file_type() {
+                    Ok(t) if t.is_dir() => pila.push(entrada.path()),
+                    Ok(t) if t.is_file() => {
+                        if tomados == RECORDADOS {
+                            eprintln!(
+                                "ev enganchar: carpeta «{}»: {} trae más de {RECORDADOS} ficheros; publico esos y no el resto",
+                                self.conf.ruta,
+                                dir.display()
+                            );
+                            return;
+                        }
+                        self.candidato(&entrada.path(), ahora);
+                        tomados += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// Un nombre que deja de existir (borrado o renombrado a otro). Si vuelve a aparecer, es nuevo otra vez.
@@ -206,7 +241,8 @@ impl Vigilada {
             cuerpo: Value::String(format!("{relativa} ({bytes} bytes)")),
             atributos: json!({"carpeta": self.conf.ruta, "relativa": relativa, "nombre": nombre, "bytes": bytes}),
             t_evento: Some(evento::ahora()),
-            confianza: Some("local".into()),
+            // El nombre lo puede haber elegido otro: una web para una descarga, quien manda un adjunto.
+            confianza: Some("externa".into()),
             ..Default::default()
         }
     }

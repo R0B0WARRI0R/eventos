@@ -463,6 +463,7 @@ mod carpetas {
         assert_eq!(e.gravedad.as_deref(), Some("info"));
         assert_eq!(e.cuerpo, json!("hola.txt (10 bytes)"));
         assert_eq!(e.atributos, json!({"carpeta": ruta, "relativa": "hola.txt", "nombre": "hola.txt", "bytes": 10}));
+        assert_eq!(e.confianza.as_deref(), Some("externa"), "el nombre lo puede haber elegido una web");
     }
 
     #[test]
@@ -556,6 +557,38 @@ mod carpetas {
         assert_eq!(e.atributo("relativa"), Some(&json!(relativa)));
         assert_eq!(e.atributo("bytes"), Some(&json!(3)));
         assert_eq!(e.cuerpo, json!(format!("{relativa} (3 bytes)")));
+    }
+
+    /// Una carpeta ya llena, hecha fuera y movida dentro de golpe (como al descomprimir o mover una carpeta):
+    /// Windows solo avisa de la carpeta, no de lo que trae.
+    fn mover_llena_dentro(dir: &Path, nombre: &str) {
+        let fuera = carpeta_temporal(&format!("{nombre}-fuera"));
+        std::fs::create_dir_all(fuera.join("fotos").join("viaje")).expect("subcarpetas");
+        std::fs::write(fuera.join("fotos").join("una.jpg"), "12345").expect("escribir");
+        std::fs::write(fuera.join("fotos").join("viaje").join("dos.jpg"), "1234567").expect("escribir");
+        std::fs::rename(fuera.join("fotos"), dir.join("fotos")).expect("mover dentro");
+    }
+
+    #[test]
+    fn una_subcarpeta_que_llega_llena_publica_lo_que_trae_solo_con_recursiva() {
+        let dir = carpeta_temporal("llena");
+        let mut c = vigilar(&dir, "recursiva = true");
+        mover_llena_dentro(&dir, "llena");
+        let mut llegados = Vec::new();
+        esperar(&mut c, &mut llegados, |v| con_nombre("una.jpg")(v) && con_nombre("dos.jpg")(v));
+        testigo(&mut c, &dir, &mut llegados);
+        assert_eq!(nombres(&llegados), ["dos.jpg", "testigo.txt", "una.jpg"], "una vez cada uno: {llegados:?}");
+        let e = llegados.iter().find(|e| nombre(e) == "dos.jpg").expect("dos.jpg");
+        let relativa = Path::new("fotos").join("viaje").join("dos.jpg").display().to_string();
+        assert_eq!(e.atributo("relativa"), Some(&json!(relativa)));
+        assert_eq!(e.atributo("bytes"), Some(&json!(7)));
+
+        let dir = carpeta_temporal("llena-sin-recursiva");
+        let mut c = vigilar(&dir, "");
+        mover_llena_dentro(&dir, "llena-sin-recursiva");
+        let mut llegados = Vec::new();
+        testigo(&mut c, &dir, &mut llegados);
+        assert_eq!(nombres(&llegados), ["testigo.txt"], "sin recursiva, lo de las subcarpetas no cuenta: {llegados:?}");
     }
 }
 

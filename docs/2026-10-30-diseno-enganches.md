@@ -336,7 +336,7 @@ El cargador valida como `reglas.rs`: `deny_unknown_fields`, slugs únicos, y **r
 | 2 | `registro.inicio` / `registro.rotado` | info | `fichero:<ruta>` | local |
 | 2 | `registro.tope` / `registro.error` | aviso | `fichero:<ruta>` | local |
 | 2 | `notificacion.windows` | info | `notif:<slug>` | externa |
-| 2 | `carpeta.fichero` | info | `carpeta:<ruta>` | local |
+| 2 | `carpeta.fichero` | info | `carpeta:<ruta>` | externa (desde el 2026-10-31: el nombre lo puede elegir una web) |
 | 3 | `ventana.texto` | info | `uia:<slug>` | externa |
 | Upgrade | `upgrade.<slug>.<accion>` | según app | `upgrade:<slug>` | externa |
 | Ciclo | `enganche.tanteo` / `.verificacion` / `.fijado` / `.soltado` / `.tope` / `.requiere_reinicio` | info/aviso | `enganche:<slug>` | local |

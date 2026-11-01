@@ -166,9 +166,10 @@ antirrebote_ms = 2000           # por defecto 2000
 por_hora = 120                  # por defecto 120, como las apps
 ```
 
-- El cuerpo lleva la ruta relativa a la carpeta y el tamaño (`informe.pdf (3000 bytes)`). Los atributos son `carpeta`, `relativa`, `nombre` y `bytes`. Nunca se lee el contenido del fichero.
+- El cuerpo lleva la ruta relativa a la carpeta y el tamaño (`informe.pdf (3000 bytes)`). Los atributos son `carpeta`, `relativa`, `nombre` y `bytes`. Nunca se lee el contenido del fichero. Van con `confianza: externa`: el nombre lo puede haber elegido otro (una web para una descarga, quien manda un adjunto).
 - Un fichero se publica una sola vez, cuando lleva `antirrebote_ms` sin cambiar de tamaño. Un programa que escribe en varios pasos da un solo evento. Una descarga que se crea como `.crdownload` y se renombra a `.pdf` da uno, con el nombre final.
 - `ignorar` mira el nombre del fichero, con `*` y `?` y sin distinguir mayúsculas. Si se pone, sustituye a los cuatro de por defecto. Los directorios no son ficheros y no se publican.
+- Con `recursiva`, una subcarpeta que llega ya llena (movida o descomprimida de golpe; Windows solo avisa de ella) se recorre, y cada fichero que trae se publica como nuevo, hasta 4096 por subcarpeta. Por lo mismo, renombrar una subcarpeta dentro de la vigilada vuelve a publicar lo suyo, con las rutas nuevas.
 - Los eventos pasan por los mismos topes que los de las apps: `por_segundo_global` y el `por_hora` de cada carpeta.
 - Al arrancar se publica un `enganche.tanteo` por carpeta (fuente `enganche:carpeta:<ruta>`).
 - `ev enganchar` no arranca si una ruta está vacía, no existe, no es una carpeta o está repetida, y dice cuál.
@@ -294,7 +295,7 @@ Cada una cubre algo que la biblioteca estándar no trae:
 cargo test --jobs 2
 ```
 
-Son 60, más las de los enganches (`tests/enganches.rs`: 24, nueve de ellas de las carpetas vigiladas, con carpetas temporales de verdad; y 3 de escritorio que van aparte) y las de los ficheros de registro (`tests/tail.rs`: 20, desde el 2026-10-31; 14 de piezas sueltas con ficheros temporales y 6 con `ev tail` o `ev enganchar` contra un bus de verdad):
+Son 60, más las de los enganches (`tests/enganches.rs`: 25, diez de ellas de las carpetas vigiladas, con carpetas temporales de verdad; y 3 de escritorio que van aparte) y las de los ficheros de registro (`tests/tail.rs`: 20, desde el 2026-10-31; 14 de piezas sueltas con ficheros temporales y 6 con `ev tail` o `ev enganchar` contra un bus de verdad):
 
 - **32 contra el servicio de verdad**, en un puerto libre y con su propia carpeta.
   - Una es del 2026-10-31, del tope de `ev ver` y `ev buscar`: al llegar al tope avisan por stderr con el `--despues` con el que seguir, y por debajo no; `--despues` pagina. Falla con el `main.rs` de antes.
