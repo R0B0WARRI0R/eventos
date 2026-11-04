@@ -377,6 +377,7 @@ fn atender(n: &Arc<Nucleo>, mut req: Request) {
             Ok(json!({ "pausado": false }))
         }
         (Method::Get, "/estado") => estado(n),
+        (Method::Get, "/fuentes") => n.almacen.lock().expect("almacén").fuentes().map(|v| json!(v)).map_err(Into::into),
         (Method::Post, "/latido") => cuerpo_json(&mut req, LIMITE_LATIDO).and_then(|v| {
             let l = Latido::desde_json(&v)?;
             n.presencia.lock().expect("presencia").latir(l, ahora(), Instant::now())?;
@@ -451,6 +452,8 @@ fn filtro(q: &HashMap<String, String>) -> Resultado<Filtro> {
         texto: texto("texto"),
         tipo: texto("tipo"),
         fuente: texto("fuente"),
+        sin_fuente: texto("sin_fuente"),
+        gravedad: texto("gravedad"),
         correlacion: texto("correlacion"),
         causa: texto("causa"),
         desde: texto("desde"),

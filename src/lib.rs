@@ -12,6 +12,7 @@ pub mod enganches;
 pub mod evento;
 pub mod hook;
 pub mod mcp;
+pub mod parte;
 pub mod presencia;
 pub mod reglas;
 pub mod run;

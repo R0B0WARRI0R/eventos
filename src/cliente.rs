@@ -101,6 +101,10 @@ impl Cliente {
         Ok(self.peticion(ureq::get(&format!("{}/estado", self.base)).timeout(self.espera))?)
     }
 
+    pub fn fuentes(&self) -> Resultado<Value> {
+        self.peticion(ureq::get(&format!("{}/fuentes", self.base)).timeout(self.espera))
+    }
+
     pub fn orden(&self, ruta: &str) -> Resultado<Value> {
         Ok(self.peticion(ureq::post(&format!("{}{ruta}", self.base)).timeout(self.espera))?)
     }

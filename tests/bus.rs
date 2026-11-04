@@ -234,7 +234,7 @@ fn el_mcp_publica_en_la_cadena_de_su_agente_y_busca() {
     assert_eq!(respuestas[0]["result"]["serverInfo"]["name"], "pulso");
     assert_eq!(respuestas[0]["result"]["protocolVersion"], "2025-06-18");
     let nombres: Vec<&str> = respuestas[1]["result"]["tools"].as_array().expect("tools").iter().filter_map(|t| t["name"].as_str()).collect();
-    assert_eq!(nombres, ["publicar", "buscar", "esperar"], "un agente de una regla no se suscribe");
+    assert_eq!(nombres, ["publicar", "buscar", "esperar", "fuentes"], "un agente de una regla no se suscribe");
     assert!(respuestas[0]["result"]["capabilities"].get("experimental").is_none(), "ni ofrece el canal (corre con -p)");
     assert!(respuestas[2]["result"]["content"][0]["text"].as_str().unwrap_or("").starts_with("publicado: "));
     let encontrados: Vec<Value> = serde_json::from_str(respuestas[3]["result"]["content"][0]["text"].as_str().expect("texto")).expect("lista");
@@ -415,7 +415,7 @@ fn una_sesion_se_suscribe_y_el_bus_le_avisa_por_el_canal_solo_de_lo_que_pidio() 
     assert_eq!(inicio["result"]["capabilities"]["experimental"]["claude/channel"], json!({}));
     let lista = s.pedir("tools/list", json!({}), &mut avisos);
     let nombres: Vec<&str> = lista["result"]["tools"].as_array().expect("tools").iter().filter_map(|t| t["name"].as_str()).collect();
-    assert_eq!(nombres, ["publicar", "buscar", "esperar", "suscribir", "suscripciones", "desuscribir"]);
+    assert_eq!(nombres, ["publicar", "buscar", "esperar", "fuentes", "suscribir", "suscripciones", "desuscribir"]);
     // Lo suyo no le avisa (más abajo): la descripción tiene que decirlo, o una prueba con `publicar` parece un canal
     // roto (pasó el 2026-10-31), y decir cómo probarla desde fuera.
     let herramientas = lista["result"]["tools"].as_array().expect("tools");
@@ -479,7 +479,7 @@ fn una_sesion_se_suscribe_y_el_bus_le_avisa_por_el_canal_solo_de_lo_que_pidio() 
     assert!(inicio["result"]["capabilities"].get("experimental").is_none(), "{inicio}");
     let lista = p.pedir("tools/list", json!({}), &mut avisos);
     let nombres: Vec<&str> = lista["result"]["tools"].as_array().expect("tools").iter().filter_map(|t| t["name"].as_str()).collect();
-    assert_eq!(nombres, ["publicar", "buscar", "esperar"]);
+    assert_eq!(nombres, ["publicar", "buscar", "esperar", "fuentes"]);
     assert_eq!(p.llamar("suscribir", json!({ "motivo": "m", "tipo": "t" }), &mut avisos)["isError"], true);
 }
 
@@ -898,7 +898,7 @@ fn nada_del_evento_sale_de_sus_etiquetas_ni_el_agente_lleva_permisos_peligrosos(
     // Al lanzar un .cmd, Rust entrecomilla los argumentos con comas (para cmd la coma separa): se quitan las comillas.
     let tokens: Vec<&str> = args.split_whitespace().map(|t| t.trim_matches('"')).collect();
     let valor = |opcion: &str| tokens.iter().position(|t| *t == opcion).and_then(|i| tokens.get(i + 1)).copied();
-    assert_eq!(valor("--allowedTools"), Some("mcp__pulso__publicar,mcp__pulso__buscar,mcp__pulso__esperar"), "{args}");
+    assert_eq!(valor("--allowedTools"), Some("mcp__pulso__publicar,mcp__pulso__buscar,mcp__pulso__esperar,mcp__pulso__fuentes"), "{args}");
     assert_eq!(valor("--disallowedTools"), Some("Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch"), "{args}");
     assert_eq!(tokens.iter().filter(|t| **t == "--allowedTools").count(), 1, "{args}");
     assert!(tokens.contains(&"--restricted") && tokens.contains(&"--strict-mcp-config"), "{args}");
@@ -1359,4 +1359,268 @@ fn la_sesion_sabe_para_que_es_pulso_y_cuando_usarlo() {
     let mut p = SesionMcp::abrir(&d, "sesion-p", "sdk-cli");
     let inicio = p.pedir("initialize", json!({ "protocolVersion": "2025-06-18" }), &mut avisos);
     assert!(!inicio["result"]["instructions"].as_str().expect("instrucciones").contains("suscr"), "{inicio}");
+}
+
+fn tipos(eventos: &[Value]) -> Vec<String> {
+    eventos.iter().map(|e| e["tipo"].as_str().unwrap_or("").to_string()).collect()
+}
+
+/// El 2026-11-04, 38 de los 40 últimos eventos eran hooks: unos 24 KB para dos datos. Sin pedirlos, no salen.
+#[test]
+fn buscar_deja_fuera_los_hooks_si_no_los_pide_y_filtra_por_gravedad() {
+    let d = Demonio::arrancar("buscar-hooks", None);
+    por_el_hook_de(&d, None, br#"{"hook_event_name":"Stop","session_id":"una-sesion"}"#);
+    d.publicar(json!([
+        { "fuente": "app:x", "tipo": "x.bien", "gravedad": "info" },
+        { "fuente": "app:x", "tipo": "x.raro", "gravedad": "aviso" },
+        { "fuente": "app:y", "tipo": "y.mal", "gravedad": "error" },
+        { "fuente": "app:y", "tipo": "y.nada" },
+    ]));
+    let mut s = SesionMcp::abrir(&d, "sesion", "cli");
+    let mut avisos = Vec::new();
+    let mut buscar = |args: Value| -> Vec<String> {
+        let r = s.llamar("buscar", args, &mut avisos);
+        tipos(&serde_json::from_str::<Vec<Value>>(&texto_de(&r)).expect("lista"))
+    };
+
+    assert_eq!(buscar(json!({})), ["x.bien", "x.raro", "y.mal", "y.nada"]);
+    assert_eq!(buscar(json!({ "con_hooks": true })), ["claude.Stop", "x.bien", "x.raro", "y.mal", "y.nada"]);
+    // Pedirlos por tipo, fuente o correlación también es pedirlos: si no, un vacío parecería que no ha pasado nada.
+    for pedido in [json!({ "tipo": "claude.*" }), json!({ "fuente": "hook:claude" }), json!({ "correlacion": "una-sesion" })] {
+        assert_eq!(buscar(pedido.clone()), ["claude.Stop"], "{pedido}");
+    }
+
+    assert_eq!(buscar(json!({ "gravedad": "error" })), ["y.mal"]);
+    assert_eq!(buscar(json!({ "gravedad": ["aviso", "error"] })), ["x.raro", "y.mal"]);
+    assert!(buscar(json!({ "gravedad": "aviso", "fuente": "app:y" })).is_empty());
+
+    // Por HTTP (`ev ver`, el visor) todo sigue como estaba, y excluir es explícito.
+    assert_eq!(d.ver(&[]).len(), 5);
+    assert_eq!(tipos(&d.ver(&[("sin_fuente", "app:*")])), ["claude.Stop"]);
+    assert_eq!(tipos(&d.ver(&[("sin_fuente", "app:x"), ("gravedad", "error,aviso")])), ["y.mal"]);
+}
+
+#[test]
+fn esperar_filtra_por_fuente_y_gravedad_y_no_despierta_con_los_hooks() {
+    let d = Demonio::arrancar("esperar-fuente", None);
+    let mut s = SesionMcp::abrir(&d, "sesion", "cli");
+    let mut avisos = Vec::new();
+    let mut esperar = |args: Value, antes: Value, despues: Value| -> Vec<String> {
+        thread::scope(|h| {
+            h.spawn(|| {
+                thread::sleep(Duration::from_millis(300));
+                por_el_hook_de(&d, None, br#"{"hook_event_name":"Stop","session_id":"otra"}"#);
+                d.publicar(antes);
+                d.publicar(despues);
+            });
+            let r = s.llamar("esperar", args, &mut avisos);
+            cuerpos(&serde_json::from_str::<Vec<Value>>(&texto_de(&r)).expect("lista"))
+        })
+    };
+
+    let otra = json!({ "fuente": "app:otra", "tipo": "t", "gravedad": "info", "cuerpo": "otra" });
+    let esta = json!({ "fuente": "app:esta", "tipo": "t", "gravedad": "error", "cuerpo": "esta" });
+    assert_eq!(esperar(json!({ "fuente": "app:esta*", "segundos": 10 }), otra.clone(), esta.clone()), ["esta"]);
+    assert_eq!(esperar(json!({ "gravedad": "error", "segundos": 10 }), otra.clone(), esta.clone()), ["esta"]);
+    let sin_filtro = esperar(json!({ "segundos": 10 }), otra.clone(), esta.clone());
+    assert_eq!(sin_filtro.first().map(String::as_str), Some("otra"), "el hook no la despierta: {sin_filtro:?}");
+}
+
+#[test]
+fn fuentes_dice_quien_publica_y_junta_los_hooks() {
+    let d = Demonio::arrancar("fuentes", None);
+    por_el_hook_de(&d, None, br#"{"hook_event_name":"Stop","session_id":"una"}"#);
+    por_el_hook_de(&d, None, br#"{"hook_event_name":"Stop","session_id":"otra"}"#);
+    d.publicar(json!([
+        { "fuente": "app:x", "tipo": "t", "gravedad": "aviso" },
+        { "fuente": "app:x", "tipo": "t", "gravedad": "error" },
+        { "fuente": "app:x", "tipo": "t", "gravedad": "error" },
+        { "fuente": "app:x", "tipo": "t", "gravedad": "info" },
+        { "fuente": "app:y", "tipo": "t" },
+    ]));
+    let mut s = SesionMcp::abrir(&d, "sesion", "cli");
+    let mut avisos = Vec::new();
+    let lista: Vec<Value> = serde_json::from_str(&texto_de(&s.llamar("fuentes", json!({}), &mut avisos))).expect("lista");
+    let nombres: Vec<&str> = lista.iter().filter_map(|f| f["fuente"].as_str()).collect();
+    assert_eq!(nombres, ["app:y", "app:x", "hook:claude"], "la más reciente primero y los hooks juntos: {lista:?}");
+    assert_eq!((&lista[1]["eventos"], &lista[1]["avisos"], &lista[1]["errores"]), (&json!(4), &json!(1), &json!(2)));
+    assert_eq!(lista[2]["eventos"], 2);
+    assert!(lista[0]["ultimo"].as_str().is_some_and(|u| u.starts_with("20")), "{lista:?}");
+
+    // Un agente también puede preguntarlo.
+    let mut p = SesionMcp::abrir(&d, "sesion-p", "sdk-cli");
+    assert!(p.llamar("fuentes", json!({}), &mut avisos).get("isError").is_none());
+}
+
+/// `/clear` empieza otra conversación con el mismo `ev mcp`: lo que pidió la anterior no tiene por qué despertarla.
+#[test]
+fn un_clear_quita_las_suscripciones_de_la_conversacion_anterior() {
+    let d = Demonio::arrancar("clear-suscripciones", None);
+    let yo = std::process::id();
+    let mut s = SesionMcp::abrir(&d, "sesion-de-antes", "cli");
+    let mut avisos = Vec::new();
+    let r = s.llamar("suscribir", json!({ "motivo": "de antes", "tipo": "prueba.*" }), &mut avisos);
+    assert!(texto_de(&r).starts_with("suscrita s1"), "{r}");
+
+    // No cambian de conversación: su propia compactación, y el clear de otro `claude.exe`.
+    por_el_hook_de(&d, Some(yo), br#"{"hook_event_name":"SessionStart","session_id":"sesion-de-antes","source":"compact"}"#);
+    por_el_hook_de(&d, Some(yo + 1), br#"{"hook_event_name":"SessionStart","session_id":"ajena","source":"clear"}"#);
+    d.publicar(json!({ "fuente": "proc:x", "tipo": "prueba.antes" }));
+    s.avisos(&mut avisos, 1);
+    assert_eq!(avisos.len(), 1, "{avisos:?}");
+    assert!(avisos[0]["params"]["content"].as_str().unwrap_or("").contains("prueba.antes"), "{avisos:?}");
+
+    por_el_hook_de(&d, Some(yo), br#"{"hook_event_name":"SessionStart","session_id":"sesion-nueva","source":"clear"}"#);
+    thread::sleep(Duration::from_millis(1000));
+    d.publicar(json!({ "fuente": "proc:x", "tipo": "prueba.despues" }));
+    s.avisos(&mut avisos, 2);
+    assert_eq!(avisos.len(), 1, "tras el clear no avisa lo de antes: {avisos:?}");
+    assert_eq!(texto_de(&s.llamar("suscripciones", json!({}), &mut avisos)), "no tienes suscripciones activas");
+
+    // La conversación nueva se suscribe con normalidad: ni el clear de antes se la lleva ni le llega lo anterior.
+    let r = s.llamar("suscribir", json!({ "motivo": "de ahora", "tipo": "prueba.*" }), &mut avisos);
+    assert!(texto_de(&r).starts_with("suscrita"), "{r}");
+    d.publicar(json!({ "fuente": "proc:x", "tipo": "prueba.nueva" }));
+    s.avisos(&mut avisos, 2);
+    assert_eq!(avisos.len(), 2, "{avisos:?}");
+    let ultimo = avisos[1]["params"]["content"].as_str().unwrap_or("");
+    assert!(ultimo.contains("prueba.nueva") && !ultimo.contains("prueba.despues"), "{ultimo}");
+}
+
+/// Sin suscripciones el vigía no mira el bus: su cursor se queda atrás y no puede servir para la siguiente.
+#[test]
+fn una_suscripcion_nueva_no_avisa_de_lo_anterior_a_ella() {
+    let d = Demonio::arrancar("suscripcion-nueva", None);
+    let mut s = SesionMcp::abrir(&d, "sesion", "cli");
+    let mut avisos = Vec::new();
+    s.llamar("suscribir", json!({ "motivo": "primera", "tipo": "prueba.*" }), &mut avisos);
+    s.llamar("desuscribir", json!({ "id": "todas" }), &mut avisos);
+    // Despierta al vigía de su espera y lo deja sin nada que mirar.
+    d.publicar(json!({ "fuente": "proc:x", "tipo": "otra.cosa" }));
+    thread::sleep(Duration::from_millis(1500));
+
+    d.publicar(json!({ "fuente": "proc:x", "tipo": "prueba.vieja" }));
+    s.llamar("suscribir", json!({ "motivo": "segunda", "tipo": "prueba.*" }), &mut avisos);
+    d.publicar(json!({ "fuente": "proc:x", "tipo": "prueba.nueva" }));
+    s.avisos(&mut avisos, 1);
+    let textos: String = avisos.iter().filter_map(|a| a["params"]["content"].as_str()).collect();
+    assert!(textos.contains("prueba.nueva"), "{textos}");
+    assert!(!textos.contains("prueba.vieja"), "ocurrió antes de suscribirse: {textos}");
+}
+
+const ARRANQUE: &str = r#"{"hook_event_name":"SessionStart","session_id":"s","source":"startup"}"#;
+
+/// Lanza `ev parte` como lo hace el hook y devuelve su salida; siempre tiene que terminar con 0.
+fn parte_con(mut c: Command, carga: &str, entrada: &str, entorno: &[(&str, &str)]) -> String {
+    c.arg("parte")
+        .env("CLAUDE_CODE_ENTRYPOINT", entrada)
+        .env_remove("EV_CAUSA")
+        .env_remove("EV_REGLA")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for (k, v) in entorno {
+        c.env(k, v);
+    }
+    let mut hijo = c.spawn().expect("ev parte");
+    hijo.stdin.take().expect("stdin").write_all(carga.as_bytes()).expect("escribir");
+    let salida = hijo.wait_with_output().expect("fin");
+    assert_eq!(salida.status.code(), Some(0), "nunca bloquea a Claude Code");
+    String::from_utf8(salida.stdout).expect("UTF-8")
+}
+
+fn parte(d: &Demonio, carga: &str) -> String {
+    parte_con(d.ev(), carga, "cli", &[])
+}
+
+/// El texto que Claude Code añade al contexto de la sesión.
+fn contexto(salida: &str) -> String {
+    let v: Value = serde_json::from_str(salida).unwrap_or_else(|e| panic!("{e}: {salida}"));
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart", "{v}");
+    v["hookSpecificOutput"]["additionalContext"].as_str().expect("additionalContext").to_string()
+}
+
+#[test]
+fn el_parte_cuenta_una_vez_los_avisos_y_errores_desde_la_ultima_sesion() {
+    let d = Demonio::arrancar("parte", None);
+    d.publicar(json!({ "fuente": "app:x", "tipo": "x.anterior", "gravedad": "error" }));
+    // La primera vez solo marca desde dónde: lo que ya había no es novedad.
+    assert_eq!(parte(&d, ARRANQUE), "");
+    assert!(d.dir.join("parte.cursor").exists());
+
+    d.publicar(json!([
+        { "fuente": "app:x", "tipo": "x.raro", "gravedad": "aviso", "cuerpo": "primero" },
+        { "fuente": "app:y", "tipo": "y.mal", "gravedad": "error", "cuerpo": "se rompe" },
+        { "fuente": "app:x", "tipo": "x.raro", "gravedad": "aviso", "cuerpo": "segundo\ncon salto" },
+        { "fuente": "app:x", "tipo": "x.bien", "gravedad": "info", "cuerpo": "no cuenta" },
+        { "fuente": "app:x", "tipo": "x.nada", "cuerpo": "no cuenta" },
+        { "fuente": "hook:claude/s", "tipo": "claude.Raro", "gravedad": "error", "cuerpo": "no cuenta" },
+    ]));
+    let texto = contexto(&parte(&d, ARRANQUE));
+    let lineas: Vec<&str> = texto.lines().collect();
+    assert_eq!(lineas.len(), 3, "{texto}");
+    assert!(lineas[0].contains("no instrucciones"), "lo que publican las apps no manda: {texto}");
+    assert!(!lineas[0].contains("no caben"), "cabe todo: {texto}");
+    assert!(lineas[1].starts_with("- error") && lineas[1].contains("y.mal") && lineas[1].contains("se rompe"), "los errores primero: {texto}");
+    assert!(lineas[2].starts_with("- aviso") && lineas[2].contains("x.raro") && lineas[2].contains("×2"), "agrupados: {texto}");
+    assert!(lineas[2].contains("segundo con salto") && !lineas[2].contains("primero"), "el último, en una línea: {texto}");
+    assert!(!texto.contains("x.anterior") && !texto.contains("no cuenta"), "{texto}");
+
+    assert_eq!(parte(&d, ARRANQUE), "", "lo contado no se repite");
+}
+
+#[test]
+fn el_parte_resume_lo_que_no_cabe_y_recorta_los_cuerpos() {
+    let d = Demonio::arrancar("parte-largo", None);
+    parte(&d, ARRANQUE);
+    let largo = "palabra ".repeat(200);
+    for n in 0..5 {
+        d.publicar(json!({ "fuente": "app:x", "tipo": format!("x.t{n}"), "gravedad": "aviso", "cuerpo": largo }));
+    }
+    let texto = contexto(&parte(&d, ARRANQUE));
+    let lineas: Vec<&str> = texto.lines().collect();
+    assert_eq!(lineas.len(), 4, "la cabecera y tres líneas de eventos, ni una más: {texto}");
+    assert!(lineas[1].contains("x.t4") && lineas[3].contains("x.t2"), "lo último primero: {texto}");
+    assert!(lineas[0].contains("no caben aquí: 2"), "cuántos quedan fuera: {texto}");
+    assert!(!texto.contains("x.t1"), "{texto}");
+    assert!(texto.chars().count() < 1000, "tiene que caber sin molestar: {}", texto.chars().count());
+}
+
+/// Lo que no es una conversación nueva de una persona no da el parte, ni gasta las novedades de la que venga después.
+#[test]
+fn el_parte_no_sale_en_compactaciones_agentes_ni_sesiones_internas() {
+    let d = Demonio::arrancar("parte-quien", None);
+    parte(&d, ARRANQUE);
+    d.publicar(json!({ "fuente": "app:x", "tipo": "x.raro", "gravedad": "aviso" }));
+
+    assert_eq!(parte(&d, r#"{"hook_event_name":"SessionStart","source":"compact"}"#), "");
+    assert_eq!(parte(&d, r#"{"hook_event_name":"SessionStart","source":"fork"}"#), "");
+    assert_eq!(parte(&d, "esto no es JSON"), "");
+    assert_eq!(parte_con(d.ev(), ARRANQUE, "sdk-cli", &[]), "", "un claude -p");
+    assert_eq!(parte_con(d.ev(), ARRANQUE, "cli", &[("EV_REGLA", "una-regla")]), "", "un agente de una regla");
+    let interna = r#"{"hook_event_name":"SessionStart","source":"startup","cwd":"C:\\apps\\interna\\sesion-1"}"#;
+    assert_eq!(parte_con(d.ev(), interna, "cli", &[("EV_HOOK_IGNORAR", r"C:\apps\interna")]), "", "una sesión interna");
+
+    assert!(contexto(&parte(&d, ARRANQUE)).contains("x.raro"), "las novedades siguen ahí");
+    d.publicar(json!({ "fuente": "app:x", "tipo": "x.otra", "gravedad": "aviso" }));
+    assert!(contexto(&parte(&d, r#"{"hook_event_name":"SessionStart","source":"clear"}"#)).contains("x.otra"), "un clear es otra conversación");
+}
+
+#[test]
+fn sin_bus_el_parte_calla_y_no_toca_su_marca() {
+    let dir = carpeta_temporal("parte-sin-bus");
+    let marca = dir.join("parte.cursor");
+    std::fs::write(&marca, "7").expect("marca");
+    let ev = || {
+        let mut c = Command::new(EV);
+        c.env("EV_PUERTO", puerto_libre().to_string()).env("EV_DIR", &dir).env_remove("EV_HOOK_IGNORAR");
+        c
+    };
+    assert_eq!(parte_con(ev(), ARRANQUE, "cli", &[]), "");
+    assert_eq!(std::fs::read_to_string(&marca).expect("marca"), "7");
+    // Una marca rota no rompe nada: sin bus, tampoco inventa otra.
+    std::fs::write(&marca, "basura").expect("marca");
+    assert_eq!(parte_con(ev(), ARRANQUE, "cli", &[]), "");
+    assert_eq!(std::fs::read_to_string(&marca).expect("marca"), "basura");
+    let _ = std::fs::remove_dir_all(&dir);
 }

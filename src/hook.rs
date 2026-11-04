@@ -9,6 +9,9 @@ use std::time::Duration;
 
 const LIMITE_ENTRADA: u64 = 4 << 20;
 
+/// La fuente de lo que publica este hook, antes de la sesión (`hook:claude/<sesión>`).
+pub const FUENTE_HOOKS: &str = "hook:claude";
+
 /// Más carpetas cuyas sesiones no se publican, separadas por `;`; se suman a la de por defecto. Una entrada `-` quita
 /// la de por defecto (`EV_HOOK_IGNORAR=-` no ignora nada).
 pub const VARIABLE_IGNORAR: &str = "EV_HOOK_IGNORAR";
@@ -58,7 +61,7 @@ pub fn dentro_de(ruta: &str, carpeta: &str) -> bool {
 }
 
 /// Si la sesión que manda el hook trabaja en una carpeta ignorada (ver `carpetas_ignoradas`).
-fn ignorada(carga: &Value) -> bool {
+pub fn ignorada(carga: &Value) -> bool {
     let Some(cwd) = carga.get("cwd").and_then(Value::as_str) else { return false };
     let variable = std::env::var_os(VARIABLE_IGNORAR).map(|v| v.to_string_lossy().into_owned());
     carpetas_ignoradas(variable.as_deref(), &temporal()).iter().any(|c| dentro_de(cwd, c))
@@ -125,7 +128,7 @@ pub fn recibir() -> i32 {
     // Qué `claude.exe` lo lanzó: la sesión cambia con un `/clear`, el proceso no (ver `ATRIBUTO_CLAUDE`).
     let claude_pid = std::env::var("CLAUDE_PID").ok().and_then(|p| p.trim().parse::<u64>().ok());
     let e = Evento {
-        fuente: format!("hook:claude/{}", sesion.as_deref().unwrap_or("?")),
+        fuente: format!("{FUENTE_HOOKS}/{}", sesion.as_deref().unwrap_or("?")),
         tipo: format!("claude.{nombre}"),
         cuerpo: lo_necesario(carga),
         atributos: claude_pid.map_or(Value::Null, |p| json!({ ATRIBUTO_CLAUDE: p })),

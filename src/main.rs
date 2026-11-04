@@ -2,7 +2,7 @@ use eventos::cliente::{Cliente, Envio};
 use eventos::evento::Evento;
 use eventos::servidor::{self, Config};
 use eventos::texto::recortar;
-use eventos::{carpeta_datos, enganchar, hook, mcp, puerto, run, tail, Resultado};
+use eventos::{carpeta_datos, enganchar, hook, mcp, parte, puerto, run, tail, Resultado};
 use serde_json::Value;
 
 const AYUDA: &str = "ev — Pulso, el bus de eventos universal (v0)
@@ -10,7 +10,8 @@ const AYUDA: &str = "ev — Pulso, el bus de eventos universal (v0)
   ev servir [--puerto N] [--reglas F] [--carpeta D]   arranca el servicio (127.0.0.1:8870 por defecto)
   ev run -- <orden> [args...]       lanza la orden y guarda cada línea, el inicio y el final como eventos
   ev hook                           adaptador para los hooks de Claude Code (JSON por la entrada estándar)
-  ev mcp                            servidor MCP por stdio: publicar, buscar, esperar
+  ev parte                          para el hook SessionStart: avisos y errores de las apps desde la última sesión
+  ev mcp                            servidor MCP por stdio: publicar, buscar, esperar, fuentes
   ev enganchar [--config F]         vigila desde fuera las apps de enganches.toml (abrir, cerrar, cuelgues, caídas)
                                     y sigue sus ficheros de registro ([[fichero]])
   ev tail <ruta>... [--app SLUG] [--desde-inicio] [--por-segundo N]
@@ -60,6 +61,7 @@ fn ejecutar(args: &[String]) -> Resultado<i32> {
             Ok(run::ejecutar(orden))
         }
         Some("hook") => Ok(hook::recibir()),
+        Some("parte") => Ok(parte::ejecutar()),
         Some("enganchar") => {
             let o = enganchar::Opciones {
                 config: bandera(resto, "--config").map(Into::into).unwrap_or_else(|| r"D:\dev\eventos\enganches.toml".into()),

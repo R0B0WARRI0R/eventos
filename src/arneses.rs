@@ -129,7 +129,7 @@ fn claude(bus: &dyn Bus, regla: &Regla, disparo: &Evento, base: Evento) {
     // --strict-mcp-config: solo el MCP del bus (sin él, cada llamada carga todos los MCP configurados).
     cmd.args(["-p", "--output-format", "stream-json", "--verbose", "--restricted", "--strict-mcp-config", "--mcp-config"])
         .arg(&config)
-        .args(["--allowedTools", "mcp__pulso__publicar,mcp__pulso__buscar,mcp__pulso__esperar"])
+        .args(["--allowedTools", "mcp__pulso__publicar,mcp__pulso__buscar,mcp__pulso__esperar,mcp__pulso__fuentes"])
         .args(["--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch"])
         // Sin --tools, --restricted deja herramientas con efectos fuera (Artifact, SendMessage, PushNotification,
         // EnterWorktree, Task...). Con él, de las propias de Claude Code solo quedan estas tres; el MCP del bus sigue.

@@ -1,4 +1,5 @@
 use crate::evento::Evento;
+use crate::hook::FUENTE_HOOKS;
 use rusqlite::{params, params_from_iter, Connection, ToSql};
 use serde_json::Value;
 use std::path::Path;
@@ -21,6 +22,10 @@ pub struct Filtro {
     pub tipo: Option<String>,
     /// Prefijo de la fuente, o patrón si lleva `*`.
     pub fuente: Option<String>,
+    /// Fuente que se deja fuera: prefijo, o patrón si lleva `*`.
+    pub sin_fuente: Option<String>,
+    /// Una o varias gravedades, separadas por comas.
+    pub gravedad: Option<String>,
     /// Exacta, o patrón si lleva `*`.
     pub correlacion: Option<String>,
     pub causa: Option<String>,
@@ -123,6 +128,23 @@ impl Almacen {
                 args.push(Box::new(p.clone()));
             }
         }
+        if let Some(p) = &f.sin_fuente {
+            if p.contains('*') {
+                condiciones += " AND fuente NOT GLOB ?";
+                args.push(Box::new(a_glob(p)));
+            } else {
+                condiciones += " AND substr(fuente, 1, length(?)) <> ?";
+                args.push(Box::new(p.clone()));
+                args.push(Box::new(p.clone()));
+            }
+        }
+        if let Some(g) = &f.gravedad {
+            let valores: Vec<&str> = g.split(',').map(str::trim).filter(|v| !v.is_empty()).collect();
+            if !valores.is_empty() {
+                condiciones += &format!(" AND gravedad IN ({})", vec!["?"; valores.len()].join(", "));
+                args.extend(valores.into_iter().map(|v| Box::new(v.to_string()) as Box<dyn ToSql>));
+            }
+        }
         if let Some(d) = &f.desde {
             condiciones += " AND t_visto >= ?";
             args.push(Box::new(d.clone()));
@@ -178,6 +200,27 @@ impl Almacen {
         );
         let mut stmt = self.con.prepare(&sql)?;
         let filas = stmt.query_map(params![id], fila_a_evento)?;
+        filas.collect()
+    }
+
+    /// Quién publica en el bus: cuántos eventos, avisos y errores lleva cada fuente y cuándo publicó por última vez. La
+    /// más reciente primero. Las sesiones de Claude Code van juntas: son una fuente por sesión, cientos.
+    pub fn fuentes(&self) -> rusqlite::Result<Vec<Value>> {
+        let sql = format!(
+            "SELECT CASE WHEN fuente GLOB '{FUENTE_HOOKS}/*' THEN '{FUENTE_HOOKS}' ELSE fuente END AS f, count(*), \
+             count(CASE WHEN gravedad = 'aviso' THEN 1 END), count(CASE WHEN gravedad = 'error' THEN 1 END), max(t_visto) \
+             FROM eventos GROUP BY f ORDER BY max(seq) DESC"
+        );
+        let mut stmt = self.con.prepare(&sql)?;
+        let filas = stmt.query_map([], |r| {
+            Ok(serde_json::json!({
+                "fuente": r.get::<_, String>(0)?,
+                "eventos": r.get::<_, i64>(1)?,
+                "avisos": r.get::<_, i64>(2)?,
+                "errores": r.get::<_, i64>(3)?,
+                "ultimo": r.get::<_, String>(4)?,
+            }))
+        })?;
         filas.collect()
     }
 
