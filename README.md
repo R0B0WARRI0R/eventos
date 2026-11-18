@@ -149,6 +149,26 @@ En el panel de tareas, integrada queda lista para revisar; aprobada sin integrar
 
 Las reglas `diagnosticar-quorum-rechazada` y `diagnosticar-quorum-error` (desde 2026-10-30) despiertan con esos dos finales al agente de lectura, que lee los eventos de la tarea (y, si hace falta, el código en `D:\dev`, donde están los proyectos y sus worktrees en `.quorum`) y publica una `nota.reanudacion`: qué se pedía, qué la tumbó, qué falta y la siguiente orden. El panel la engancha bajo la tarea. Una puerta fallida no dispara nada, porque Quórum aún tiene rondas. Comprobado el 2026-10-30 con Claude real en un bus aparte: 13 s, solo `buscar` y `publicar`, sin tocar ficheros. Si el bus estaba parado, la tarea llega de la cola sin el detalle del final y el agente tiene menos con qué trabajar.
 
+## wow-ai, la XANA de WoW Forever (desde 2026-11-18)
+
+El puente de wow-ai (`D:\dev\wow-ai\bridge`, rama local `xana/pulso`; guía en `D:\dev\wow-xana\LEEME.md`) publica con la fuente `app:wow-ai`.
+
+| Tipo | Gravedad | Qué es |
+|---|---|---|
+| `wowai.inicio` | info | El puente arranca. |
+| `wowai.juego` | info | Encuentra la ventana del juego. |
+| `wowai.contexto` | info | La situación en el juego cambia (personaje, posición, dinero, misiones). |
+| `wowai.pregunta` | info | Empieza una pregunta: agente, sesión nueva o reanudada, longitud. Nunca el texto. |
+| `wowai.respuesta` | info o error | Cómo acabó, con segundos y longitud. Si falla, el error del puente, con `confianza: externa`. |
+| `wowai.problema` | aviso o error | Fallos de su registro: captura, Inbox, primer, guardar. Como mucho uno por minuto de cada clase. |
+| `wowai.caida` | error | El puente se cae (lo publica el supervisor, que lo reinicia). |
+
+Correlaciones:
+- Los eventos de un arranque comparten `app:wow-ai:<pid del puente>`.
+- Una pregunta y su respuesta comparten `app:wow-ai:<sesión del addon>:<id>`.
+
+Si el bus no responde, los eventos van a `datos\pendientes.jsonl`, y lo que sigue en vuelo cuando el puente sale, también. Se enciende y se apaga con la clave `pulso` de su `config.json`. Comprobado el 2026-11-18 con un bus de prueba en el puerto 8879 y una pregunta real, y luego en el bus de verdad (`inicio` y `juego`).
+
 ## Enganches (desde 2026-10-31)
 
 `ev enganchar --config D:\dev\eventos\enganches.toml` vigila desde fuera las apps de `enganches.toml` y publica, con la fuente `app:<slug>` y la correlación `app:<slug>:<arranque>`:
